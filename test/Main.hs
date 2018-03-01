@@ -7,8 +7,9 @@ import Hedgehog (property,forAll,Property,(===),failure)
 import Hedgehog.Gen (list,enumBounded,int,frequency)
 import Hedgehog.Range (Range,linear)
 import Test.Tasty (defaultMain,testGroup,TestTree)
-import Test.Tasty.Hedgehog as H
+import Data.Bits ((.&.))
 
+import qualified Test.Tasty.Hedgehog as H
 import qualified Byte.Array as BA
 import qualified Data.Set as S
 import qualified GHC.OldList as L
@@ -20,6 +21,7 @@ tests :: TestTree
 tests = testGroup "Tests"
   [ testGroup "ByteArray"
     [ H.testProperty "findByte" findByteProp
+    , H.testProperty "zipAnd" zipAndProp
     ]
   ]
 
@@ -39,6 +41,14 @@ findByteProp = property $ do
       Just b -> pure b
       Nothing -> failure
   L.elemIndex w wordList === BA.findByte w (BA.pack wordList)
+
+zipAndProp :: Property
+zipAndProp = property $ do
+  xsList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
+  ysList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
+  let xs = BA.pack xsList
+      ys = BA.pack ysList
+  L.zipWith (.&.) xsList ysList === BA.unpack (BA.zipAnd xs ys)
 
 safeIndex :: Int -> [a] -> Maybe a
 safeIndex !_ [] = Nothing

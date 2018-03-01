@@ -18,6 +18,9 @@ module Byte.Array.Window
   ( findByte
   , foldl'
   , reverse
+  , zipAnd
+  , zipOr
+  , zipXor
   ) where
 
 import Data.Primitive (ByteArray(ByteArray))
@@ -27,6 +30,7 @@ import GHC.Int (Int(I#))
 import GHC.Word (Word8(W8#))
 import GHC.Exts (Int#,Word#,ByteArray#)
 import Data.Bits (xor,(.|.),(.&.),complement,unsafeShiftL)
+import Control.Monad.ST (ST,runST)
 import qualified Data.Primitive as PM
 
 type Maybe# (a :: TYPE (r :: RuntimeRep)) = (# (# #) | a #)
@@ -40,6 +44,7 @@ unboxInt :: Int -> Int#
 unboxInt (I# i) = i
 
 -- | Finds the first occurrence of the given byte.
+{-# INLINE findByte #-}
 findByte :: Int -> Int -> Word8 -> ByteArray -> Maybe Int
 findByte (I# off) (I# len) (W8# w) (ByteArray arr) =
   boxMaybeInt (findByte' off len w arr)
@@ -49,35 +54,34 @@ findByte' :: Int# -> Int# -> Word# -> ByteArray# -> Maybe# Int#
 findByte' !off# !len0# !w0# !arr0# = 
   let !off = I# off#
       !len0 = I# len0#
-      !w0 = W8# w0#
-      !arr0 = ByteArray arr0#
       !end0 = off + len0
       !beginMachWord = alignUp off
       !endMachWord = alignDown end0
-   in case go off (beginMachWord * PM.sizeOf (undefined :: Word)) w0 arr0 of
+   in case go off (beginMachWord * PM.sizeOf (undefined :: Word)) of
         (# | ix #) -> (# | ix #)
-        (# (# #) | #) -> case goMachWord beginMachWord endMachWord (broadcastWord8 w0) w0 arr0 of
+        (# (# #) | #) -> case goMachWord beginMachWord endMachWord (broadcastWord8 w) of
           (# | ix #) -> (# | ix #)
-          (# (# #) | #) -> case go (endMachWord * PM.sizeOf (undefined :: Word)) end0 w0 arr0 of
+          (# (# #) | #) -> case go (endMachWord * PM.sizeOf (undefined :: Word)) end0 of
             (# | ix #) -> (# | ix #)
             (# (# #) | #) -> (# (# #) | #)
   where
-  go :: Int -> Int -> Word8 -> ByteArray -> Maybe# Int#
-  go !ix !end !w !arr = if ix < end
+  !w = W8# w0#
+  !arr = ByteArray arr0#
+  go :: Int -> Int -> Maybe# Int#
+  go !ix !end = if ix < end
     then if PM.indexByteArray arr ix == w
       then (# | unboxInt ix #)
-      else go (ix + 1) end w arr
+      else go (ix + 1) end
     else (# (# #) | #)
   -- The start and end index here are given in Word64 elements,
   -- not Word8 elements.
-  goMachWord :: Int -> Int -> Word -> Word8 -> ByteArray -> Maybe# Int#
-  goMachWord !ix !end !artifact !w !arr = if ix < end
+  goMachWord :: Int -> Int -> Word -> Maybe# Int#
+  goMachWord !ix !end !artifact = if ix < end
     then case detectArtifact (unsafeIndexWord arr ix) artifact of
-      0 -> goMachWord (ix + 1) end artifact w arr
+      0 -> goMachWord (ix + 1) end artifact
       _ -> go -- this call to go should always return Just
         (ix * PM.sizeOf (undefined :: Word)) 
         ((ix + 1) * PM.sizeOf (undefined :: Word))
-        w arr
     else (# (# #) | #)
 
 -- cast a Word8 index to a machine Word index, rounding up
@@ -129,9 +133,61 @@ foldl' !off !len f !acc0 !arr = go acc0 off where
 unsafeIndexWord :: ByteArray -> Int -> Word
 unsafeIndexWord = PM.indexByteArray
 
+-- this is only used internally
+unsafeIndex :: ByteArray -> Int -> Word8
+unsafeIndex = PM.indexByteArray
+
 -- TODO: optimize this. We could do a whole Word64 at a
 -- time if the bytearray is pinned. Maybe even if it
 -- isn't pinned.
 -- reverse :: Int -> Int -> ByteArray -> ByteArray
 -- reverse off len arr = runST
+
+{-# INLINE zipVectorizable #-}
+zipVectorizable ::
+     (Word8 -> Word8 -> Word8)
+  -> (Word -> Word -> Word)
+  -> Int -- start x
+  -> Int -- len x
+  -> Int -- start y
+  -> Int -- len y
+  -> ByteArray -- x
+  -> ByteArray -- y
+  -> ByteArray -- z
+zipVectorizable !combine !combineMach !startX !lenX !startY !lenY !x !y = runST action
+  where
+  action :: forall s. ST s ByteArray
+  action = do
+    let !len = min lenX lenY
+    marr <- PM.newByteArray len
+    let !(!quotStartX,!remStartX) = quotRem startX (PM.sizeOf (undefined :: Word))
+        !(!quotStartY,!remStartY) = quotRem startY (PM.sizeOf (undefined :: Word))
+        go :: Int -> Int -> ST s ()
+        go !ix !end = if ix < end
+          then do
+            PM.writeByteArray marr ix (combine (unsafeIndex x (startX + ix)) (unsafeIndex y (startY + ix)))
+            go (ix + 1) end
+          else return ()
+        goMach :: Int -> Int -> ST s ()
+        goMach !ix !end = if ix < end
+          then do
+            PM.writeByteArray marr ix (combineMach (unsafeIndexWord x (quotStartX + ix)) (unsafeIndexWord y (quotStartY + ix)))
+            goMach (ix + 1) end
+          else return ()
+    if remStartX .|. remStartY == 0 -- if they are both zero
+      then do
+        let !lenQuotient = quot len (PM.sizeOf (undefined :: Word))
+        goMach 0 lenQuotient
+        go (lenQuotient * PM.sizeOf (undefined :: Word)) len
+      else go 0 len
+    PM.unsafeFreezeByteArray marr
+
+zipAnd :: Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> ByteArray
+zipAnd x0 xlen y0 ylen x y = zipVectorizable (.&.) (.&.) x0 xlen y0 ylen x y
+
+zipOr :: Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> ByteArray
+zipOr x0 xlen y0 ylen x y = zipVectorizable (.|.) (.|.) x0 xlen y0 ylen x y
+
+zipXor :: Int -> Int -> Int -> Int -> ByteArray -> ByteArray -> ByteArray
+zipXor x0 xlen y0 ylen x y = zipVectorizable (.|.) (.|.) x0 xlen y0 ylen x y
 

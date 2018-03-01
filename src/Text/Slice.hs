@@ -4,5 +4,5 @@ module Text.Slice
 
 data Text = Text
   !TextArray -- payload
-  !Int -- offset in bytes, not in characters
+  !Word -- offset in bytes, not in characters, first bit reserved
   !Int -- length in bytes, not in characters

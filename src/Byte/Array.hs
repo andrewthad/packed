@@ -25,6 +25,10 @@ module Byte.Array
   , cons
   , uncons
   , reverse
+    -- * Zip
+  , zipAnd
+  , zipOr
+  , zipXor
     -- * Unsafe
   , unsafeIndex
   ) where
@@ -165,4 +169,14 @@ unsafeIndexWord = PM.indexByteArray
 -- | Does not check to see if the index is in bounds.
 unsafeIndex :: ByteArray -> Int -> Word8
 unsafeIndex = PM.indexByteArray
+
+zipAnd :: ByteArray -> ByteArray -> ByteArray
+zipAnd x y = BAW.zipAnd 0 (length x) 0 (length y) x y
+
+zipOr :: ByteArray -> ByteArray -> ByteArray
+zipOr x y = BAW.zipOr 0 (length x) 0 (length y) x y
+
+zipXor :: ByteArray -> ByteArray -> ByteArray
+zipXor x y = BAW.zipXor 0 (length x) 0 (length y) x y
+
 
