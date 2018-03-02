@@ -4,12 +4,14 @@
 import Data.Set (Set)
 import Data.Word (Word8)
 import Hedgehog (property,forAll,Property,(===),failure)
-import Hedgehog.Gen (list,enumBounded,int,frequency)
+import Hedgehog.Gen (list,enumBounded,int,frequency,choice)
 import Hedgehog.Range (Range,linear)
 import Test.Tasty (defaultMain,testGroup,TestTree)
 import Data.Bits ((.&.))
+import Data.Char (chr)
 
 import qualified Test.Tasty.Hedgehog as H
+import qualified Text.Slice as T
 import qualified Byte.Array as BA
 import qualified Data.Set as S
 import qualified GHC.OldList as L
@@ -23,7 +25,20 @@ tests = testGroup "Tests"
     [ H.testProperty "findByte" findByteProp
     , H.testProperty "zipAnd" zipAndProp
     ]
+  , testGroup "Text"
+    [ H.testProperty "pack" textPackProp
+    ]
   ]
+
+textPackProp :: Property
+textPackProp = property $ do
+  chars <- forAll $ list (linear 0 128) $ choice
+    [ fmap chr (int (linear 0x00 0x7F))
+    , fmap chr (int (linear 0x80 0x7FF))
+    , fmap (chr . (\x -> if x >= 0xD800 && x <= 0xDFFF then 0xD799 else x)) (int (linear 0x800 0xFFFF))
+    , fmap chr (int (linear 0x10000 0x10FFFF))
+    ]
+  chars === T.unpack (T.pack chars)
 
 findByteProp :: Property
 findByteProp = property $ do

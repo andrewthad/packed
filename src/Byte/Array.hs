@@ -122,7 +122,6 @@ take !n !arr = if n < length arr
     PM.unsafeFreezeByteArray marr
   else empty
 
-{-# NOINLINE empty #-}
 empty :: ByteArray
 empty = runST (PM.newByteArray 0 >>= PM.unsafeFreezeByteArray)
 

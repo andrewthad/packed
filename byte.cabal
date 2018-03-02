@@ -31,7 +31,7 @@ library
     Byte.Array.Window
     Byte.Slice
     Text.Array
-    -- Text.Slice
+    Text.Slice
   default-language: Haskell2010
 
 test-suite test
