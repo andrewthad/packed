@@ -21,9 +21,11 @@ module Text.Slice
   , toUpper
   , take
   , drop
+  , dropEnd
+  , length
   ) where
 
-import Prelude hiding (map,take,drop)
+import Prelude hiding (map,take,drop,length)
 import Data.Char (ord,chr)
 import Data.Primitive (MutableByteArray)
 import Byte.Array (ByteArray)
@@ -164,6 +166,18 @@ moveChars !arr !start0 !maxIndex !n0 = go start0 n0
   go !ix !n = if n > 0 && ix < maxIndex
     then go (nextCharIx arr ix) (n - 1)
     else ix
+
+countChars ::
+     ByteArray -- array
+  -> Int -- start index
+  -> Int -- maximal index
+  -> Int -- number of characters 
+countChars !arr !start0 !maxIndex = go start0 0
+  where
+  go :: Int -> Int -> Int
+  go !ix !acc = if ix < maxIndex
+    then go (nextCharIx arr ix) (acc + 1)
+    else acc
 
 oneByteChar :: Word8 -> Bool
 oneByteChar w = w .&. 0b10000000 == 0
@@ -449,3 +463,20 @@ drop !n !t = if n < 1
       else empty
   where
   !(!arr,!off,!len,!mult) = textMatch t
+
+length :: Text -> Int
+length !t = if mult == single
+  then len
+  else countChars arr off (off + len)
+  where
+  !(!arr,!off,!len,!mult) = textMatch t
+
+-- | /O(n)/ 'dropEnd' @n xs@ returns the prefix of @xs@ after the last @n@ characters
+--   have been removed. It returns @empty@ instead when @n > 'length' xs@. On text
+--   containing only ASCII characters, the complexity of this function is reduced to /O(1)/.
+dropEnd :: Int -> Text -> Text
+-- Note: There is a way to implement this that is more efficient. It would
+-- required scanning UTF-8 encoded text backwards, which seems annoying
+-- to do.
+dropEnd !n !t = take (length t - n) t
+

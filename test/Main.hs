@@ -74,11 +74,14 @@ textBreakCharProp = property $ do
 textToUpperProp :: Property
 textToUpperProp = property $ do
   chars <- forAll genString
-  -- frontChop <- forAll (genOffset (L.length chars))
-  -- backChop <- forAll (genOffset (L.length chars))
-  let expected = L.map Data.Char.toUpper chars
-      actual = T.unpack (T.toUpper (T.pack chars))
+  front <- forAll (genOffset (L.length chars))
+  back <- forAll (genOffset (L.length chars))
+  let expected = L.map Data.Char.toUpper (listDropEnd back (L.drop front chars))
+      actual = T.unpack (T.toUpper (T.dropEnd back (T.drop front (T.pack chars))))
   expected === actual
+
+listDropEnd :: Int -> [a] -> [a]
+listDropEnd n xs = L.take (L.length xs - n) xs
 
 pickChar :: String -> Gen Char
 pickChar s = if L.null s
@@ -89,6 +92,11 @@ genChop :: Int -> Gen Int
 genChop originalLen = integral (linear 0 maxDiscard)
   where
   maxDiscard = div (originalLen * 6) 5
+
+genOffset :: Int -> Gen Int
+genOffset originalLen = integral (linear 0 maxDiscard)
+  where
+  maxDiscard = min 19 (div originalLen 3)
 
 -- Generates a string that is either entirely ascii
 -- or that is a healthy mixture of characters with
