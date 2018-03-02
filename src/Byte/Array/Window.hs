@@ -73,7 +73,7 @@ findByte' !off# !len0# !w0# !arr0# =
       then (# | unboxInt ix #)
       else go (ix + 1) end
     else (# (# #) | #)
-  -- The start and end index here are given in Word64 elements,
+  -- The start and end index here are given in machine Word elements,
   -- not Word8 elements.
   goMachWord :: Int -> Int -> Word -> Maybe# Int#
   goMachWord !ix !end !artifact = if ix < end

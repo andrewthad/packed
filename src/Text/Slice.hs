@@ -16,14 +16,21 @@ module Text.Slice
   , empty
   , pack
   , unpack
-  , breakOnChar
+  , breakChar
+  , map
+  , toUpper
+  , take
+  , drop
   ) where
 
+import Prelude hiding (map,take,drop)
 import Data.Char (ord,chr)
+import Data.Primitive (MutableByteArray)
 import Byte.Array (ByteArray)
 import GHC.Word (Word(W#),Word8(W8#))
-import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL)
+import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
 import Control.Monad.ST (ST,runST)
+import qualified Data.Char
 import qualified Byte.Array as BA
 import qualified Byte.Array.Window as BAW
 import qualified Data.Primitive as PM
@@ -34,6 +41,7 @@ data Text = Text
   {-# UNPACK #-} !Int -- length in bytes, not in characters
 
 newtype Multiplicity = Multiplicity Word
+  deriving Eq
 
 appendMult :: Multiplicity -> Multiplicity -> Multiplicity
 appendMult (Multiplicity a) (Multiplicity b) = Multiplicity (a .|. b)
@@ -134,6 +142,29 @@ nextChar !arr !ix
   firstByte :: Word8
   !firstByte = BA.unsafeIndex arr ix
 
+nextCharIx :: ByteArray -> Int -> Int
+nextCharIx !arr !ix
+  | oneByteChar firstByte = ix + 1
+  | twoByteChar firstByte = ix + 2
+  | threeByteChar firstByte = ix + 3
+  | otherwise = ix + 4
+  where
+  firstByte :: Word8
+  !firstByte = BA.unsafeIndex arr ix
+
+moveChars ::
+     ByteArray -- array
+  -> Int -- start index
+  -> Int -- maximal index
+  -> Int -- number of characters to move through
+  -> Int -- end index
+moveChars !arr !start0 !maxIndex !n0 = go start0 n0
+  where
+  go :: Int -> Int -> Int
+  go !ix !n = if n > 0 && ix < maxIndex
+    then go (nextCharIx arr ix) (n - 1)
+    else ix
+
 oneByteChar :: Word8 -> Bool
 oneByteChar w = w .&. 0b10000000 == 0
 
@@ -165,7 +196,7 @@ charFromFourBytes w1 w2 w3 w4 = wordToChar $
 
 -- precondition: codepoint is less than 0x800
 byteTwoOne :: Word -> Word
-byteTwoOne w = unsafeShiftR w 6 .|. 0b1100000
+byteTwoOne w = unsafeShiftR w 6 .|. 0b11000000
 
 byteTwoTwo :: Word -> Word
 byteTwoTwo w = (w .&. 0b00111111) .|. 0b10000000
@@ -213,15 +244,54 @@ wordToChar w = chr (fromIntegral w)
 empty :: Text
 empty = Text BA.empty 0 0
 
-breakOnChar :: Char -> Text -> (Text,Text)
-breakOnChar !c !t
+breakChar :: Char -> Text -> (Text,Text)
+breakChar !c !t
   | codepoint < 0x80 = breakOnByte1 (unsafeWordToWord8 codepoint) t
-  | codepoint < 0x800 = error "breakOnChar: two-byte chars"
-  | surrogate codepoint = error "breakOnChar: surrogate chars"
-  | codepoint < 0x10000 = error "breakOnChar: three-byte chars"
-  | otherwise = error "breakOnChar: four-byte chars"
+  | codepoint < 0x800 = case findBytePair off len (unsafeWordToWord8 (byteTwoOne codepoint)) (unsafeWordToWord8 (byteTwoTwo codepoint)) arr of
+      Nothing -> (t,empty)
+      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+  | surrogate codepoint = case findByteTriple off len 0xEF 0xBF 0xBD arr of
+      Nothing -> (t,empty)
+      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+  | codepoint < 0x10000 = case findByteTriple off len (unsafeWordToWord8 (byteThreeOne codepoint)) (unsafeWordToWord8 (byteThreeTwo codepoint)) (unsafeWordToWord8 (byteThreeThree codepoint)) arr of
+      Nothing -> (t,empty)
+      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+  | otherwise = case findByteQuadruple off len (unsafeWordToWord8 (byteFourOne codepoint)) (unsafeWordToWord8 (byteFourTwo codepoint)) (unsafeWordToWord8 (byteFourThree codepoint)) (unsafeWordToWord8 (byteFourFour codepoint)) arr of
+      Nothing -> (t,empty)
+      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
   where
   !codepoint = intToWord (ord c)
+  !(!arr,!off,!len,!mult) = textMatch t
+
+findBytePair :: Int -> Int -> Word8 -> Word8 -> ByteArray -> Maybe Int
+findBytePair off0 len0 w1 w2 arr = go off0 (off0 + len0 - 1)
+  where
+  go :: Int -> Int -> Maybe Int
+  go !ix !end = if ix < end
+    then if PM.indexByteArray arr ix == w1 && PM.indexByteArray arr (ix + 1) == w2
+      then Just ix
+      else go (ix + 1) end
+    else Nothing
+
+findByteTriple :: Int -> Int -> Word8 -> Word8 -> Word8 -> ByteArray -> Maybe Int
+findByteTriple off0 len0 w1 w2 w3 arr = go off0 (off0 + len0 - 2)
+  where
+  go :: Int -> Int -> Maybe Int
+  go !ix !end = if ix < end
+    then if PM.indexByteArray arr ix == w1 && PM.indexByteArray arr (ix + 1) == w2 && PM.indexByteArray arr (ix + 2) == w3
+      then Just ix
+      else go (ix + 1) end
+    else Nothing
+
+findByteQuadruple :: Int -> Int -> Word8 -> Word8 -> Word8 -> Word8 -> ByteArray -> Maybe Int
+findByteQuadruple off0 len0 w1 w2 w3 w4 arr = go off0 (off0 + len0 - 3)
+  where
+  go :: Int -> Int -> Maybe Int
+  go !ix !end = if ix < end
+    then if PM.indexByteArray arr ix == w1 && PM.indexByteArray arr (ix + 1) == w2 && PM.indexByteArray arr (ix + 2) == w3 && PM.indexByteArray arr (ix + 3) == w4
+      then Just ix
+      else go (ix + 1) end
+    else Nothing
 
 -- precondition: the Word is less than 0x80
 breakOnByte1 :: Word8 -> Text -> (Text,Text)
@@ -251,6 +321,131 @@ binaryOneThenZeroes = maxBound - div (maxBound :: Word) 2
 binaryZeroThenOnes :: Word
 binaryZeroThenOnes = div (maxBound :: Word) 2
 
-
 surrogate :: Word -> Bool
 surrogate codepoint = codepoint >= 0xD800 && codepoint < 0xE000
+
+-- Each byte in the word that is a lowercase ascii character is turned
+-- into 0x80. All other bytes become 0x00.
+hasAsciiLowerArtifact :: Word -> Word
+hasAsciiLowerArtifact w = 
+  ((div maxBound 255 * (127 + hi)) - (w .&. (div maxBound 255 * 127))) .&. complement w .&.
+  ((w .&. (div maxBound 255 * 127)) + (div maxBound 255 * (127 - lo))) .&. (div maxBound 255 * 128)
+  where
+  lo = intToWord (ord 'a' - 1)
+  hi = intToWord (ord 'z' + 1)
+
+{-# INLINE mapVectorizable #-}
+mapVectorizable ::
+     (Word8 -> Word8) -- function
+  -> (Word -> Word) -- vectorized function variant
+  -> Int -- start
+  -> Int -- len
+  -> ByteArray -- array
+  -> ByteArray
+mapVectorizable !func !funcMach !start !len !arr = runST action
+  where
+  action :: forall s. ST s ByteArray
+  action = do
+    marr <- PM.newByteArray len
+    let !(!quotStart,!remStart) = quotRem start (PM.sizeOf (undefined :: Word))
+        go :: Int -> Int -> ST s ()
+        go !ix !end = if ix < end
+          then do
+            PM.writeByteArray marr ix (func (PM.indexByteArray arr (start + ix)))
+            go (ix + 1) end
+          else return ()
+        goMach :: Int -> Int -> ST s ()
+        goMach !ix !end = if ix < end
+          then do
+            PM.writeByteArray marr ix (funcMach (PM.indexByteArray arr (quotStart + ix)))
+            goMach (ix + 1) end
+          else return ()
+    if remStart == 0
+      then do
+        let !lenQuotient = quot len (PM.sizeOf (undefined :: Word))
+        goMach 0 lenQuotient
+        go (lenQuotient * PM.sizeOf (undefined :: Word)) len
+      else go 0 len
+    PM.unsafeFreezeByteArray marr
+
+toUpperAsciiWord8 :: Word8 -> Word8
+toUpperAsciiWord8 w = if word8ToWord w - intToWord (ord 'a') < 26
+  then w - 0x20
+  else w
+
+toUpperAsciiWord :: Word -> Word
+toUpperAsciiWord w = w - unsafeShiftR (hasAsciiLowerArtifact w) 2
+
+toUpperAscii :: Int -> Int -> ByteArray -> ByteArray
+toUpperAscii !off !len !arr = mapVectorizable toUpperAsciiWord8 toUpperAsciiWord off len arr
+
+toUpper :: Text -> Text
+toUpper t@(Text _ offMult _) = if mult == single
+  then Text (toUpperAscii off len arr) offMult len
+  else map Data.Char.toUpper t
+  where
+  !(!arr,!off,!len,!mult) = textMatch t
+
+map :: (Char -> Char) -> Text -> Text
+map f !t = runST action
+  where
+  !(!arr,!off,!len,!_) = textMatch t
+  action :: ST s Text
+  action = do
+    marr0 <- PM.newByteArray (len + 3)
+    let go :: Int -> Int -> Int -> Multiplicity -> MutableByteArray s -> ST s (Int,MutableByteArray s,Multiplicity)
+        go !ixSrc !ixDst !marrLen !mult !marr = if ixSrc < off + len
+          then do
+            let !(!ixSrcNext,!c) = nextChar arr ixSrc
+                !c' = f c
+                -- It is disappointing that this is handled this
+                -- way. Reconsider this later.
+                !newMult = appendMult mult (if ixSrcNext - ixSrc > 1 then multiple else single)
+            if ixDst < marrLen - 3
+              then do
+                ixDstNext <- writeChar c' ixDst marr
+                go ixSrcNext ixDstNext marrLen newMult marr
+              else do
+                let newMarrLen = marrLen * 2
+                newMarr <- PM.newByteArray newMarrLen
+                PM.copyMutableByteArray newMarr 0 marr 0 marrLen -- possible minus 3?
+                ixDstNext <- writeChar c' ixDst newMarr
+                go ixSrcNext ixDstNext newMarrLen newMult newMarr
+          else return (ixDst,marr,mult)
+    (finalLen,finalMarr,finalMult) <- go off 0 (len + 3) single marr0
+    newArr <- PM.unsafeFreezeByteArray finalMarr
+    return (Text newArr (buildZeroOffMult finalMult) finalLen)
+
+-- | /O(n)/ 'take' @n xs@ returns the prefix of @xs@ of length @n@. It returns
+--   @xs@ instead when @n > 'length' xs@. On text containing only ASCII characters,
+--   the complexity of this function is reduced to /O(1)/.
+take :: Int -> Text -> Text
+take !n !t@(Text _ !offMult _) = if n < 1
+  then empty
+  else if mult == single
+    then if n < len
+      then Text arr offMult n
+      else t
+    else if n < len * 4
+      then Text arr offMult (moveChars arr off (off + len) n - off)
+      else t
+  where
+  !(!arr,!off,!len,!mult) = textMatch t
+
+-- | /O(n)/ 'drop' @n xs@ returns the suffix of @xs@ after the first @n@ characters
+--   have been removed. It returns @empty@ instead when @n > 'length' xs@. On text
+--   containing only ASCII characters, the complexity of this function is reduced to /O(1)/.
+drop :: Int -> Text -> Text
+drop !n !t = if n < 1
+  then t
+  else if mult == single
+    then if n < len
+      then Text arr (buildOffMult (off + n) mult) (len - n)
+      else empty
+    else if n < len * 4
+      then
+        let !skipped = moveChars arr off (off + len) n - off
+         in Text arr (buildOffMult (off + skipped) mult) (len - skipped)
+      else empty
+  where
+  !(!arr,!off,!len,!mult) = textMatch t
