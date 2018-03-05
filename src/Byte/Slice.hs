@@ -10,6 +10,10 @@
 
 module Byte.Slice
   ( ByteSlice(..)
+  , pack
+  , unpack
+  , drop
+  , dropEnd
   , replicate
   , length
   , foldl'
@@ -18,7 +22,7 @@ module Byte.Slice
   , findByte
   ) where
 
-import Prelude hiding (take,length,replicate)
+import Prelude hiding (take,length,replicate,drop)
 
 import Byte.Array (ByteArray(..))
 import Data.Word (Word8)
@@ -30,6 +34,27 @@ data ByteSlice = ByteSlice
   {-# UNPACK #-} !Int -- offset
   {-# UNPACK #-} !Int -- length
 
+pack :: [Word8] -> ByteSlice
+pack bs = let arr = BA.pack bs in ByteSlice arr 0 (BA.length arr)
+
+unpack :: ByteSlice -> [Word8]
+unpack (ByteSlice arr off len) = go off
+  where
+  go :: Int -> [Word8]
+  go !ix = if ix < len + off
+    then BA.unsafeIndex arr ix : go (ix + 1)
+    else []
+
+drop :: Int -> ByteSlice -> ByteSlice
+drop n (ByteSlice arr off len) = if len > n
+  then ByteSlice arr (off + n) (len - n)
+  else empty
+
+dropEnd :: Int -> ByteSlice -> ByteSlice
+dropEnd n (ByteSlice arr off len) = if len > n
+  then ByteSlice arr off (len - n)
+  else empty
+
 replicate :: Int -> Word8 -> ByteSlice
 replicate len w = fromByteArray (BA.replicate len w)
 
@@ -40,7 +65,9 @@ length :: ByteSlice -> Int
 length (ByteSlice _ _ len) = len
 
 findByte :: Word8 -> ByteSlice -> Maybe Int
-findByte !w (ByteSlice arr off len) = BAW.findByte off len w arr
+findByte !w (ByteSlice arr off len) = case BAW.findByte off len w arr of
+  Just ix -> Just (ix - off)
+  Nothing -> Nothing
 
 foldl' :: (a -> Word8 -> a) -> a -> ByteSlice -> a
 foldl' f !acc0 (ByteSlice arr off len) = BAW.foldl' off len f acc0 arr

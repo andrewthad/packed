@@ -4,7 +4,7 @@
 import Data.Set (Set)
 import Data.Word (Word8)
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
-import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral)
+import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8)
 import Hedgehog.Range (Range,linear)
 import Test.Tasty (defaultMain,testGroup,TestTree)
 import Data.Bits ((.&.))
@@ -17,6 +17,7 @@ import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
 import qualified Text.Slice as T
 import qualified Byte.Array as BA
+import qualified Byte.Slice as B
 import qualified Data.Set as S
 import qualified GHC.OldList as L
 
@@ -28,6 +29,9 @@ tests = testGroup "Tests"
   [ testGroup "ByteArray"
     [ testProperty "findByte" findByteProp
     , testProperty "zipAnd" zipAndProp
+    ]
+  , testGroup "Bytes"
+    [ testProperty "findByte" sliceFindByteProp
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
@@ -44,7 +48,11 @@ tests = testGroup "Tests"
 textPackProp :: Property
 textPackProp = property $ do
   chars <- forAll genString
-  chars === T.unpack (T.pack chars)
+  front <- forAll (genOffset (L.length chars))
+  back <- forAll (genOffset (L.length chars))
+  let expected = listDropEnd back (L.drop front chars)
+      actual = T.unpack (T.dropEnd back (T.drop front (T.pack chars)))
+  expected === actual
 
 textTakeProp :: Property
 textTakeProp = property $ do
@@ -66,9 +74,12 @@ textDropProp = property $ do
 textBreakCharProp :: Property
 textBreakCharProp = property $ do
   chars <- forAll genString
-  c <- forAll (pickChar chars)
-  let expected = L.break (== c) chars
-      actual = bimap T.unpack T.unpack (T.breakChar c (T.pack chars))
+  front <- forAll (genOffset (L.length chars))
+  back <- forAll (genOffset (L.length chars))
+  let truncatedChars = listDropEnd back (L.drop front chars)
+  c <- forAll (pickChar truncatedChars)
+  let expected = L.break (== c) truncatedChars
+      actual = bimap T.unpack T.unpack (T.breakChar c (T.dropEnd back (T.drop front (T.pack chars))))
   expected === actual
 
 textToUpperProp :: Property
@@ -86,6 +97,11 @@ listDropEnd n xs = L.take (L.length xs - n) xs
 pickChar :: String -> Gen Char
 pickChar s = if L.null s
   then genCharUnicode
+  else element s
+
+pickByte :: [Word8] -> Gen Word8
+pickByte s = if L.null s
+  then genByte
   else element s
 
 genChop :: Int -> Gen Int
@@ -121,6 +137,9 @@ genCharUnicode = choice
   , fmap chr (int (linear 0x10000 0x10FFFF))
   ]
 
+genByte :: Gen Word8
+genByte = word8 (linear minBound maxBound)
+
 
 findByteProp :: Property
 findByteProp = property $ do
@@ -138,6 +157,18 @@ findByteProp = property $ do
       Just b -> pure b
       Nothing -> failure
   L.elemIndex w wordList === BA.findByte w (BA.pack wordList)
+
+sliceFindByteProp :: Property
+sliceFindByteProp = property $ do
+  byteList <- forAll (list (linear 0 128) genByte)
+  front <- forAll (genOffset (L.length byteList))
+  back <- forAll (genOffset (L.length byteList))
+  let truncatedByteList = listDropEnd back (L.drop front byteList)
+  w <- forAll (pickByte truncatedByteList)
+  let expected = L.elemIndex w truncatedByteList
+      actual = B.findByte w (B.dropEnd back (B.drop front (B.pack byteList)))
+  expected === actual
+
 
 zipAndProp :: Property
 zipAndProp = property $ do

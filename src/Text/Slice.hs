@@ -74,7 +74,8 @@ pack str = case metadata 0 single str of
         !mult = if bytes < 2 then single else multiple
      in metadata (bytes + totalBytes) (appendMult mult totalMult) cs
 
--- result is between 1 and 4
+-- Result is between 1 and 4. The guards used here do not have to treat
+-- surrogates as a special case.
 charBytes :: Char -> Int
 charBytes !c
   | codepoint < 0x80 = 1
@@ -263,16 +264,16 @@ breakChar !c !t
   | codepoint < 0x80 = breakOnByte1 (unsafeWordToWord8 codepoint) t
   | codepoint < 0x800 = case findBytePair off len (unsafeWordToWord8 (byteTwoOne codepoint)) (unsafeWordToWord8 (byteTwoTwo codepoint)) arr of
       Nothing -> (t,empty)
-      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+      Just ix -> (Text arr (buildOffMult off mult) (ix - off), Text arr (buildOffMult ix mult) (len + off - ix))
   | surrogate codepoint = case findByteTriple off len 0xEF 0xBF 0xBD arr of
       Nothing -> (t,empty)
-      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+      Just ix -> (Text arr (buildOffMult off mult) (ix - off), Text arr (buildOffMult ix mult) (len + off - ix))
   | codepoint < 0x10000 = case findByteTriple off len (unsafeWordToWord8 (byteThreeOne codepoint)) (unsafeWordToWord8 (byteThreeTwo codepoint)) (unsafeWordToWord8 (byteThreeThree codepoint)) arr of
       Nothing -> (t,empty)
-      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+      Just ix -> (Text arr (buildOffMult off mult) (ix - off), Text arr (buildOffMult ix mult) (len + off - ix))
   | otherwise = case findByteQuadruple off len (unsafeWordToWord8 (byteFourOne codepoint)) (unsafeWordToWord8 (byteFourTwo codepoint)) (unsafeWordToWord8 (byteFourThree codepoint)) (unsafeWordToWord8 (byteFourFour codepoint)) arr of
       Nothing -> (t,empty)
-      Just ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+      Just ix -> (Text arr (buildOffMult off mult) (ix - off), Text arr (buildOffMult ix mult) (len + off - ix))
   where
   !codepoint = intToWord (ord c)
   !(!arr,!off,!len,!mult) = textMatch t
@@ -313,7 +314,10 @@ breakOnByte1 !w !t =
   let !(!arr,!off,!len,!mult) = textMatch t
    in case BAW.findByte off len w arr of
         Nothing -> (t,empty)
-        Just !ix -> (Text arr (buildOffMult off mult) ix, Text arr (buildOffMult ix mult) (len + off - ix))
+        Just !ix -> (dwindle (Text arr (buildOffMult off mult) (ix - off)), Text arr (buildOffMult ix mult) (len + off - ix))
+
+dwindle :: Text -> Text
+dwindle t@(Text _ _ !len) = if len > 0 then t else empty
   
 buildOffMult :: Int -> Multiplicity -> Word
 buildOffMult i (Multiplicity x) = intToWord i .|. x
@@ -348,6 +352,10 @@ hasAsciiLowerArtifact w =
   lo = intToWord (ord 'a' - 1)
   hi = intToWord (ord 'z' + 1)
 
+-- TODO: improve this. Currently, we do not use a vectorized implementation if
+-- the string doesn't start aligned on a machine word address. We can fix this
+-- by padding the result to the left to line it up better. This would trade a
+-- small amount of space for more speed.
 {-# INLINE mapVectorizable #-}
 mapVectorizable ::
      (Word8 -> Word8) -- function
@@ -394,8 +402,8 @@ toUpperAscii :: Int -> Int -> ByteArray -> ByteArray
 toUpperAscii !off !len !arr = mapVectorizable toUpperAsciiWord8 toUpperAsciiWord off len arr
 
 toUpper :: Text -> Text
-toUpper t@(Text _ offMult _) = if mult == single
-  then Text (toUpperAscii off len arr) offMult len
+toUpper t = if mult == single
+  then Text (toUpperAscii off len arr) (buildZeroOffMult single) len
   else map Data.Char.toUpper t
   where
   !(!arr,!off,!len,!mult) = textMatch t
