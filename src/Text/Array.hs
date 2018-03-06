@@ -33,7 +33,7 @@ newtype UnslicedText = UnslicedText ByteArray
 -- zero as the MSB (representing a code point in the ascii range),
 -- it is assumed that the entire piece of text only uses code points
 -- in the ascii range. If however, the first byte is 0b11111111
--- (which is not a valid UTF-8), then this first byte is discarded
+-- (which is not valid a UTF-8 byte anywhere), then this first byte is discarded
 -- and it is assumed that the text contains code points from any range.
 -- The first byte is not allowed to be anything starting with 1.
 -- This bloats all non-English text by one byte.
