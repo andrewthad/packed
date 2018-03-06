@@ -14,7 +14,7 @@
  -O2
 #-}
 
-module Byte.Array.Window
+module Packed.Bytes.Window
   ( findByte
   , foldl'
   , reverse

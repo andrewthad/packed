@@ -2,11 +2,11 @@
 
 import Gauge (bgroup,bench,whnf)
 import Gauge.Main (defaultMain)
-import Byte.Array (ByteArray)
-import Text.Slice (Text)
+import Packed.Bytes.Small (ByteArray)
+import Packed.Text (Text)
 
-import qualified Byte.Array as BA
-import qualified Text.Slice as T
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Text as T
 import qualified GHC.OldList as L
 
 main :: IO ()

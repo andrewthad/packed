@@ -10,21 +10,21 @@
  -fno-warn-missing-import-lists
  -O2
 #-}
-module Text.Array
-  ( UnslicedText(..)
+module Packed.Text.Small
+  ( SmallText(..)
   , empty
   , reverse
   ) where
 
 import Prelude hiding (reverse)
 
-import Byte.Array (ByteArray)
+import Packed.Bytes.Small (ByteArray)
 import Data.Bits ((.&.))
 import Data.Semigroup (Semigroup)
-import qualified Byte.Array as BA
+import qualified Packed.Bytes.Small as BA
 import qualified Data.Semigroup as SG
 
-newtype UnslicedText = UnslicedText ByteArray 
+newtype SmallText = SmallText ByteArray 
 
 -- Text is UTF-8 encoded with one caveat. There are several operations
 -- that can be faster if we know in advance that all the codepoints in
@@ -63,10 +63,10 @@ unicodeRange arr
         _ -> ascii
   | otherwise = ascii
 
-empty :: UnslicedText
-empty = UnslicedText BA.empty
+empty :: SmallText
+empty = SmallText BA.empty
 
-reverse :: UnslicedText -> UnslicedText
-reverse (UnslicedText arr) = case unicodeRange arr of
-  UnicodeRange 1 -> UnslicedText (BA.reverse arr)
+reverse :: SmallText -> SmallText
+reverse (SmallText arr) = case unicodeRange arr of
+  UnicodeRange 1 -> SmallText (BA.reverse arr)
   _ -> error "Text.Array.reverse: write the non-ascii case"

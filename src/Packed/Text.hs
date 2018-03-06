@@ -11,7 +11,7 @@
  -O2
 #-}
 
-module Text.Slice
+module Packed.Text
   ( Text(..)
   , empty
   , pack
@@ -28,13 +28,13 @@ module Text.Slice
 import Prelude hiding (map,take,drop,length)
 import Data.Char (ord,chr)
 import Data.Primitive (MutableByteArray)
-import Byte.Array (ByteArray)
+import Packed.Bytes.Small (ByteArray)
 import GHC.Word (Word(W#),Word8(W8#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
 import Control.Monad.ST (ST,runST)
 import qualified Data.Char
-import qualified Byte.Array as BA
-import qualified Byte.Array.Window as BAW
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Bytes.Window as BAW
 import qualified Data.Primitive as PM
 
 data Text = Text

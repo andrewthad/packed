@@ -15,9 +15,9 @@ import Data.Bifunctor (bimap)
 
 import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
-import qualified Text.Slice as T
-import qualified Byte.Array as BA
-import qualified Byte.Slice as B
+import qualified Packed.Text as T
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Bytes as B
 import qualified Data.Set as S
 import qualified GHC.OldList as L
 

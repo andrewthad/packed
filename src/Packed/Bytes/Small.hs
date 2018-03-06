@@ -10,7 +10,7 @@
  -O2
 #-}
 
-module Byte.Array
+module Packed.Bytes.Small
   ( ByteArray(..)
   , empty
   , pack
@@ -42,7 +42,7 @@ import GHC.Exts (setByteArray#,word2Int#,byteSwap#)
 import GHC.Int (Int(I#))
 import GHC.Word (Word8(W8#),Word(W#))
 import qualified GHC.OldList as L
-import qualified Byte.Array.Window as BAW
+import qualified Packed.Bytes.Window as BAW
 import qualified Data.Primitive as PM
 
 singleton :: Word8 -> ByteArray
