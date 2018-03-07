@@ -23,6 +23,7 @@ import GHC.Types
 import Packed.Bytes (Bytes)
 import Packed.Bytes.Small (ByteArray)
 import GHC.Int (Int(I#))
+import Data.Bits ((.&.),(.|.),unsafeShiftR)
 
 import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
@@ -55,6 +56,8 @@ tests = testGroup "Tests"
     , testProperty "decodeAscii" textDecodeAscii
     , testGroup "decodeUtf8"
       [ testProperty "isomorphism" textDecodeUtf8Iso
+      , testProperty "surrogates" textDecodeUtf8Surrogates
+        -- TODO: test against malformed inputs to decodeUtf8
       ]
     ]
   ]
@@ -78,12 +81,28 @@ textDecodeAscii = property $ do
 
 textDecodeUtf8Iso :: Property
 textDecodeUtf8Iso = property $ do
-  chars <- forAll genStringAscii
+  chars <- forAll genString
   front <- forAll (genOffset (L.length chars))
   back <- forAll (genOffset (L.length chars))
   let text = T.dropEnd back (T.drop front (T.pack chars))
       decoded = T.decodeUtf8 (T.encodeUtf8 text)
   Just (T.unpack text) === fmap T.unpack decoded
+
+textDecodeUtf8Surrogates :: Property
+textDecodeUtf8Surrogates = property $ do
+  chars <- forAll genStringSurrogates
+  front <- forAll (genOffset (L.length chars))
+  back <- forAll (genOffset (L.length chars))
+  let truncatedChars = listDropEnd back (L.drop front chars)
+      cleanChars = map
+        (\c -> if Data.Char.ord c >= 0xD800 && Data.Char.ord c < 0xE000 then chr 0xFFFD else c)
+        truncatedChars
+      bytes = B.pack (foldMap charToBytesWithSurrogates truncatedChars)
+      text = T.dropEnd back (T.drop front (T.pack chars))
+      decoded = T.decodeUtf8 (T.encodeUtf8 text)
+  Just cleanChars === fmap T.unpack decoded
+  Just (T.unpack text) === fmap T.unpack decoded
+  Just cleanChars === fmap T.unpack (T.decodeUtf8 bytes)
 
 textPackProp :: Property
 textPackProp = property $ do
@@ -159,6 +178,20 @@ genOffset originalLen = integral (linear 0 maxDiscard)
 -- variable UTF-8 byte lengths.
 genString :: Gen String
 genString = frequency [ (3, genStringAscii), (7, genStringUnicode) ]
+
+genSurrogate :: Gen Char
+genSurrogate = fmap chr (int (linear 0xD800 0xDFFF))
+
+genSurrogates :: Gen String
+genSurrogates = list (linear 0 3) genSurrogate
+
+-- Generates a string that may contain unicode characters
+-- in the range U+D800 to U+DFFF.
+genStringSurrogates :: Gen String
+genStringSurrogates = choice
+  [ apcat [genSurrogates, genStringAscii, genSurrogates]
+  , apcat [genSurrogates, genStringUnicode, genSurrogates]
+  ]
 
 -- Only uses ascii characters
 genStringAscii :: Gen String
@@ -245,9 +278,54 @@ allBytes = S.fromList (enumFromTo minBound maxBound)
 apcat :: (Applicative f, Monoid a) => [f a] -> f a
 apcat = fmap mconcat . sequenceA
 
+-- This is nearly the same this as Packed.Text.pack. However, it does
+-- not replace surrogates with U+FFFD. This is useful for testing
+-- that we handle surrogates correctly when decoding UTF-8 text.
+charToBytesWithSurrogates :: Char -> [Word8]
+charToBytesWithSurrogates c
+  | p < 0x80 = [wordToWord8 p]
+  | p < 0x800 = [wordToWord8 (byteTwoOne p), wordToWord8 (byteTwoTwo p)]
+  | p < 0x10000 = [wordToWord8 (byteThreeOne p), wordToWord8 (byteThreeTwo p), wordToWord8 (byteThreeThree p)]
+  | otherwise = [wordToWord8 (byteFourOne p), wordToWord8 (byteFourTwo p), wordToWord8 (byteFourThree p), wordToWord8 (byteFourFour p)]
+  where
+  p :: Word
+  p = fromIntegral (Data.Char.ord c)
+  
+wordToWord8 :: Word -> Word8
+wordToWord8 = fromIntegral
+
+-- precondition: codepoint is less than 0x800
+byteTwoOne :: Word -> Word
+byteTwoOne w = unsafeShiftR w 6 .|. 0b11000000
+
+byteTwoTwo :: Word -> Word
+byteTwoTwo w = (w .&. 0b00111111) .|. 0b10000000
+
+-- precondition: codepoint is less than 0x1000
+byteThreeOne :: Word -> Word
+byteThreeOne w = unsafeShiftR w 12 .|. 0b11100000
+
+byteThreeTwo :: Word -> Word
+byteThreeTwo w = (0b00111111 .&. unsafeShiftR w 6) .|. 0b10000000
+
+byteThreeThree :: Word -> Word
+byteThreeThree w = (w .&. 0b00111111) .|. 0b10000000
+
+-- precondition: codepoint is less than 0x110000
+byteFourOne :: Word -> Word
+byteFourOne w = unsafeShiftR w 18 .|. 0b11110000
+
+byteFourTwo :: Word -> Word
+byteFourTwo w = (0b00111111 .&. unsafeShiftR w 12) .|. 0b10000000
+
+byteFourThree :: Word -> Word
+byteFourThree w = (0b00111111 .&. unsafeShiftR w 6) .|. 0b10000000
+
+byteFourFour :: Word -> Word
+byteFourFour w = (0b00111111 .&. w) .|. 0b10000000
 -- let chars = ['\NUL']
 -- let text = T.dropEnd 0 (T.drop 0 (T.pack chars))
-    -- decoded = T.decodeUtf9 (T.encodeUtf8 text)
+    -- decoded = T.decodeUtf8 (T.encodeUtf8 text)
 -- print (inspectBytes (T.encodeUtf8 text))
 -- case BAW.findNonAscii' 0 2 (BA.pack [0b00101010, 0b11000000]) of
 --   (# (# #) | #) -> putStrLn "non non-ascii characters"

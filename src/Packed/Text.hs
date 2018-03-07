@@ -529,28 +529,63 @@ decodeResumeAscii (Bytes arr off len) = case BAW.findNonAscii' off len arr of
 
 decodeUtf8 :: Bytes -> Maybe Text
 decodeUtf8 b = case decodeResumeUtf8 b of
-  (# !_, (# !_ | #) #) -> Nothing
-  (# !t, (# | (# (# #) | #) #) #) -> Just t
-  (# !_, (# | (# | !_ #) #) #) -> Nothing
+  (# !_, (# !_ | | #) #) -> Nothing
+  (# !t, (# | (# #) | #) #) -> Just t
+  (# !_, (# | | !_ #) #) -> Nothing
+
+-- decodeUtf8 :: Bytes -> Maybe Text
+-- decodeUtf8 b = case decodeResumeUtf8 b of
+--   (# !_, West !_ #) -> Nothing
+--   (# !t, Center () #) -> Just t
+--   (# !_, East !_ #) -> Nothing
+
+data Choice a b c = West a | Center b | East c
 
 decodeResumeUtf8 ::
      Bytes
-  -- -> (# Text, Either Bytes (Either () (Word,Word,Word)) #)
-  -> (# Text, (# Bytes | (# (# #) | (# Word#, Word#, Word# #) #) #) #)
-decodeResumeUtf8 (Bytes arr off len) = case BAW.isUtf8 off len arr of
-  (# ascii, (# ixFailure# | #) #) -> case ascii of
-    2## -> error "decodeResumeUtf8: surrogate byte, handle this"
-    _ -> 
-      let !ixFailure = I# ixFailure#
-       -- in (# Text arr (buildOffMult off (Multiplicity (W# ascii))) ixFailure, Left (Bytes arr ixFailure (len + off - ixFailure)) #)
-       in (# Text arr (buildOffMult off (Multiplicity (W# ascii))) ixFailure, (# (Bytes arr ixFailure (len + off - ixFailure)) | #) #)
-  (# ascii, (# | !remaining #) #) -> case ascii of
-    2## -> error "decodeResumeUtf8: surrogate byte, handle this"
-    -- _ -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , Right (convertTuple remaining) #)
-    -- _ -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | remaining #) #)
-    _ -> case remaining of
-      (# (# #) | #) -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | (# (# #) | #) #) #)
-      (# | (# w1, w2, w3 #) #) -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | (# | (# w1, w2, w3 #) #) #) #)
+  -> (# Text, (# Bytes | (# #) | (# Word#, Word#, Word# #) #) #)
+decodeResumeUtf8 (Bytes arr off len) = 
+  let !(# !ascii, !r #) = BAW.isUtf8 off len arr
+      !modifiedArr = case ascii of
+        1## -> runST $ do
+          marr <- PM.newByteArray len
+          PM.copyByteArray marr 0 arr off len
+          replaceSurrogates 0 len marr
+          PM.unsafeFreezeByteArray marr
+        _ -> arr
+      !mult = case ascii of
+        1## -> multiple
+        _ -> Multiplicity (W# ascii)
+   in case r of
+        (# ixFailure# | | #) -> 
+          let !ixFailure = I# ixFailure#
+           in (# Text modifiedArr (buildOffMult off mult) ixFailure, (# (Bytes arr ixFailure (len + off - ixFailure)) | | #) #)
+        (# | (# #) | #) -> (# Text modifiedArr (buildOffMult off mult) len, (# | (# #) | #) #)
+        (# | | (# w1, w2, w3 #) #) -> (# Text modifiedArr (buildOffMult off mult) len , (# | | (# w1, w2, w3 #) #) #)
+
+replaceSurrogates :: forall s. Int -> Int -> MutableByteArray s -> ST s ()
+replaceSurrogates start len marr = go start where
+  go :: Int -> ST s ()
+  go !ix = if ix < len - 2
+    then do
+      !w1 <- PM.readByteArray marr ix
+      !w2 <- PM.readByteArray marr (ix + 1)
+      !w3 <- PM.readByteArray marr (ix + 2)
+      if threeByteChar w1 && surrogate (codepointFromThreeBytes w1 w2 w3)
+        then do
+          -- Codepoint U+FFFD
+          PM.writeByteArray marr ix (0xEF :: Word8)
+          PM.writeByteArray marr (ix + 1) (0xBF :: Word8)
+          PM.writeByteArray marr (ix + 2) (0xBD :: Word8)
+          go (ix + 3)
+        else go (ix + 1)
+    else return ()
+
+codepointFromThreeBytes :: Word8 -> Word8 -> Word8 -> Word
+codepointFromThreeBytes w1 w2 w3 = 
+  unsafeShiftL (word8ToWord w1 .&. 0b00001111) 12 .|. 
+  unsafeShiftL (word8ToWord w2 .&. 0b00111111) 6 .|. 
+  (word8ToWord w3 .&. 0b00111111)
 
 convertTuple :: (# (# #) | (# Word#, Word#, Word# #) #) -> Either () (Word,Word,Word)
 convertTuple (# (# #) | #) = Left ()

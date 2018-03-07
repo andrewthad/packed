@@ -342,9 +342,10 @@ findNonAscii' !start !len !arr = findVectorizable
 --      so far. It will need to be bit shifted to the left by some
 --      multiple of 6 to be completed.
 --   
---   The first tuple element is 1 if everything successfully
---   parsed was acsii and 0 if multi-byte characters were present.
---   It is 2 if there were surrogates, characters
+--   The first tuple element is 0 if everything successfully
+--   parsed was acsii and a word with the high bit set to 1
+--   if multi-byte characters were present.
+--   It is 1 if there were surrogates, characters
 --   in the range @U+D800@ to @U+DFFF@, present in the text. If
 --   there are surrogates, it is implied that there are multi-byte
 --   characters, since a surrogate is multi-byte by definition.
@@ -354,14 +355,15 @@ isUtf8 ::
      Int -- start
   -> Int -- length
   -> ByteArray -- bytes
-  -> (# Word#, (# Int# | (# (# #) | (# Word#, Word#, Word# #) #) #) #)
+  -> (# Word#, (# Int# | (# #) | (# Word#, Word#, Word# #) #) #)
 isUtf8 !start !len !arr = case findNonAscii' start len arr of
-  (# (# #) | #) -> (# 1##, (# | (# (# #) | #) #) #)
+  (# (# #) | #) -> (# 0##, (# | (# #) | #) #)
   (# | ix# #) -> case postAsciiIsUtf8 (I# ix#) (len + start - (I# ix#)) arr of
-    (# hasSurrogate, (# ixFailure# | #) #) -> if I# ix# == I# ixFailure#
-      then (# 1## , (# ixFailure# | #) #)
-      else (# hasSurrogate, (# ixFailure# | #) #)
-    (# hasSurrogate, (# | remaining #) #) -> (# hasSurrogate, (# | remaining #) #)
+    (# hasSurrogate, (# ixFailure# | | #) #) -> if I# ix# == I# ixFailure#
+      then (# 0## , (# ixFailure# | | #) #)
+      else (# hasSurrogate, (# ixFailure# | | #) #)
+    (# hasSurrogate, (# | (# #) | #) #) -> (# hasSurrogate, (# | (# #) | #) #)
+    (# hasSurrogate, (# | | (# w1, w2, w3 #) #) #) -> (# hasSurrogate, (# | | (# w1, w2, w3 #) #) #)
 -- Notes on the implementation of isUtf8 There is some careful trickery to
 -- ensure that we always correctly report whether or not we encountered any
 -- multi-byte characters. We initially do a fast run to get as far as we can
@@ -382,8 +384,9 @@ isUtf8 !start !len !arr = case findNonAscii' start len arr of
 -- author of this library does not know of a way to vectorize the check
 -- for UTF-8 compliance.
 --
--- The first element of the response tuple is either 0 or 2. If it is
--- 0, no surrogates were present. If it is 2, surrogates were present.
+-- The first element of the response tuple is either 1 or a machine word
+-- with the high bit set to 1. If it is the high bit,
+-- no surrogates were present. If it is 1, surrogates were present.
 -- The second element is a nested unboxed sum with three cases. These
 -- are described in the docs for isUtf8.
 --
@@ -391,13 +394,13 @@ postAsciiIsUtf8 ::
      Int -- start
   -> Int -- length
   -> ByteArray -- bytes
-  -> (# Word#, (# Int# | (# (# #) | (# Word#, Word#, Word# #) #) #) #)
-postAsciiIsUtf8 !start !len !arr = go start 0
+  -> (# Word#, (# Int# | (# #) | (# Word#, Word#, Word# #) #) #)
+postAsciiIsUtf8 !start !len !arr = go start binaryOneThenZeroes
   where
   !end = start + len
   go :: Int 
      -> Word
-     -> (# Word#, (# Int# | (# (# #) | (# Word#, Word#, Word# #) #) #) #)
+     -> (# Word#, (# Int# | (# #) | (# Word#, Word#, Word# #) #) #)
   go !ix !hasSurrogate = if ix < end
     then
       let !firstByte = safeIndex arr ix in
@@ -405,8 +408,8 @@ postAsciiIsUtf8 !start !len !arr = go start 0
           | twoByteChar firstByte -> if ix + 1 < end
               then if followingByte (safeIndex arr (ix + 1))
                 then go (ix + 2) hasSurrogate
-                else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-              else (# unboxWord hasSurrogate, (# | (# | (# 2##, 1##, unboxWord (byteTwoPartialOne firstByte) #) #) #) #)
+                else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+              else (# unboxWord hasSurrogate, (# | | (# 2##, 1##, unboxWord (byteTwoPartialOne firstByte) #) #) #)
           | threeByteChar firstByte ->
               if | ix + 2 < end -> 
                      let !secondByte = safeIndex arr (ix + 1) in
@@ -415,16 +418,16 @@ postAsciiIsUtf8 !start !len !arr = go start 0
                          let !thirdByte = safeIndex arr (ix + 2) in
                          if followingByte thirdByte
                            then if surrogate (codepointFromThreeBytes firstByte secondByte thirdByte)
-                             then go (ix + 3) 2
+                             then go (ix + 3) 1
                              else go (ix + 3) hasSurrogate
-                           else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                       else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
+                           else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                       else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 1 < end -> 
                      let !secondByte = safeIndex arr (ix + 1) in
                      if followingByte secondByte
-                       then (# unboxWord hasSurrogate, (# | (# | (# 3##, 1##, unboxWord (byteThreePartialTwo firstByte secondByte) #) #) #) #)
-                       else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                 | otherwise -> (# unboxWord hasSurrogate, (# | (# | (# 3##, 2##, unboxWord (byteThreePartialOne firstByte) #) #) #) #)
+                       then (# unboxWord hasSurrogate, (# | | (# 3##, 1##, unboxWord (byteThreePartialTwo firstByte secondByte) #) #) #)
+                       else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                 | otherwise -> (# unboxWord hasSurrogate, (# | | (# 3##, 2##, unboxWord (byteThreePartialOne firstByte) #) #) #)
           | fourByteChar firstByte ->
               if | ix + 3 < end ->
                      let !secondByte = safeIndex arr (ix + 1) in
@@ -436,26 +439,26 @@ postAsciiIsUtf8 !start !len !arr = go start 0
                              let !fourthByte = safeIndex arr (ix + 3) in
                              if followingByte fourthByte
                                then go (ix + 4) hasSurrogate
-                               else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                           else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                       else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
+                               else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                           else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                       else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 2 < end -> 
                      let !secondByte = safeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then 
                          let !thirdByte = safeIndex arr (ix + 2) in
                          if followingByte thirdByte
-                           then (# unboxWord hasSurrogate, (# | (# | (# 4##, 1##, unboxWord (byteFourPartialThree firstByte secondByte thirdByte) #) #) #) #)
-                           else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                       else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
+                           then (# unboxWord hasSurrogate, (# | | (# 4##, 1##, unboxWord (byteFourPartialThree firstByte secondByte thirdByte) #) #) #)
+                           else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                       else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 1 < end -> 
                      let !secondByte = safeIndex arr (ix + 1) in
                      if followingByte secondByte
-                       then (# unboxWord hasSurrogate, (# | (# | (# 4##, 2##, unboxWord (byteFourPartialTwo firstByte secondByte) #) #) #) #)
-                       else (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-                 | otherwise -> (# unboxWord hasSurrogate, (# | (# | (# 4##, 3##, unboxWord (byteFourPartialOne firstByte) #) #) #) #)
-          | otherwise -> (# unboxWord hasSurrogate, (# unboxInt ix | #) #)
-    else (# unboxWord hasSurrogate, (# | (# (# #) | #) #) #)
+                       then (# unboxWord hasSurrogate, (# | | (# 4##, 2##, unboxWord (byteFourPartialTwo firstByte secondByte) #) #) #)
+                       else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+                 | otherwise -> (# unboxWord hasSurrogate, (# | | (# 4##, 3##, unboxWord (byteFourPartialOne firstByte) #) #) #)
+          | otherwise -> (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
+    else (# unboxWord hasSurrogate, (# | (# #) | #) #)
 
 byteTwoPartialOne :: Word8 -> Word
 byteTwoPartialOne w = word8ToWord w .&. 0b00011111
@@ -508,4 +511,7 @@ word8ToWord = fromIntegral
 
 surrogate :: Word -> Bool
 surrogate codepoint = codepoint >= 0xD800 && codepoint < 0xE000
+
+binaryOneThenZeroes :: Word
+binaryOneThenZeroes = maxBound - div (maxBound :: Word) 2
 
