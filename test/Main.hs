@@ -35,8 +35,7 @@ import qualified Data.Set as S
 import qualified GHC.OldList as L
 
 main :: IO ()
-main = do
-  defaultMain tests
+main = defaultMain tests
 
 tests :: TestTree
 tests = testGroup "Tests"
@@ -323,60 +322,4 @@ byteFourThree w = (0b00111111 .&. unsafeShiftR w 6) .|. 0b10000000
 
 byteFourFour :: Word -> Word
 byteFourFour w = (0b00111111 .&. w) .|. 0b10000000
--- let chars = ['\NUL']
--- let text = T.dropEnd 0 (T.drop 0 (T.pack chars))
-    -- decoded = T.decodeUtf8 (T.encodeUtf8 text)
--- print (inspectBytes (T.encodeUtf8 text))
--- case BAW.findNonAscii' 0 2 (BA.pack [0b00101010, 0b11000000]) of
---   (# (# #) | #) -> putStrLn "non non-ascii characters"
---   (# | ix# #) -> putStrLn ("non-ascii character at " ++ show (I# ix#) )
--- case BAW.isUtf8 0 2 (BA.pack [0b00101010, 0b11111111]) of
---   (# _, (# ix | #) #) -> putStrLn $ "case one: " ++ show (I# ix)
---   (# _, (# | (# (# #) | #) #) #) -> putStrLn "case two"
---   _ -> putStrLn "case three"
--- case T.decodeAscii (B.pack [0]) of
---   Nothing -> putStrLn "definitely not ascii"
---   Just !_ -> putStrLn "definitely ascii"
--- case BAW.isUtf8 0 2 (BA.pack [0b11000000, 0b10000000]) of
---   (# _, (# ix | #) #) -> putStrLn $ "case one: " ++ show (I# ix)
---   (# _, (# | (# (# #) | #) #) #) -> putStrLn "case two"
---   _ -> putStrLn "case three"
--- case T.decodeResumeUtf8 (B.pack [0b11000000,0b10000000]) of
---   !_ -> putStrLn "at least it finished" 
-  -- (# !_, Left !_ #) -> putStrLn "decoding failed somewhere"
-  -- (# !_, Right !_ #) -> putStrLn "decoding was good"
-  -- (# _, (# _ | #) #) -> putStrLn "decoding failed somewhere"
-  -- _ -> putStrLn "decoding was good"
--- case T.decodeUtf8 (B.pack [0b00000000]) of
---   Nothing -> putStrLn "non text"
---   Just !_ -> putStrLn "was text"
--- print (Just (T.unpack text) == fmap T.unpack decoded)
--- print (baz 0 1)
--- putStrLn "made it past the worst"
 
--- inspectBytes :: Bytes -> (ByteArray,Int,Int)
--- inspectBytes (B.Bytes arr off len) = (arr,off,len)
--- 
--- type Maybe# (a :: TYPE (r :: RuntimeRep)) = (# (# #) | a #)
--- 
--- baz :: Int -> Int -> Char
--- baz start len = case fooBar start len of
---   (# (# #) | #) -> 'x' 
---   _ -> 'y'
--- 
--- fooBar :: 
---      Int -- start
---   -> Int -- len
---   -> Maybe# Int#
--- fooBar !start !len =
---   let !end0 = start + len
---    in if len < 8
---         then go start end0
---         else error "gountko"
---   where
---   go :: Int -> Int -> Maybe# Int#
---   go !ix !end = if ix < end
---     then case ix == 2 of
---       False -> go (ix + 1) end
---       True -> error "uheotnh" -- (# | unboxInt ix #)
---     else (# (# #) | #)
