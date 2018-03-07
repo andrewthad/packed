@@ -20,6 +20,8 @@ module Packed.Bytes
   , take
   , empty
   , findByte
+    -- * Characters
+  , isAscii
   ) where
 
 import Prelude hiding (take,length,replicate,drop)
@@ -33,6 +35,12 @@ data Bytes = Bytes
   {-# UNPACK #-} !ByteArray -- payload
   {-# UNPACK #-} !Int -- offset
   {-# UNPACK #-} !Int -- length
+
+instance Eq Bytes where
+  Bytes arrA offA lenA == Bytes arrB offB lenB =
+    if lenA == lenB
+      then BAW.equality offA offB lenA arrA arrB
+      else False
 
 pack :: [Word8] -> Bytes
 pack bs = let arr = BA.pack bs in Bytes arr 0 (BA.length arr)
@@ -79,6 +87,9 @@ take !n (Bytes arr off len) = if n < len
 
 empty :: Bytes
 empty = Bytes BA.empty 0 0
+
+isAscii :: Bytes -> Bool
+isAscii (Bytes arr off len) = BAW.isAscii off len arr
 
 -- In this implementation, we overallocate on each side to
 -- make things line up with machine word boundaries. This

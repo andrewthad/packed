@@ -29,6 +29,8 @@ module Packed.Bytes.Small
   , zipAnd
   , zipOr
   , zipXor
+    -- * Characters
+  , isAscii
     -- * Unsafe
   , unsafeIndex
   ) where
@@ -178,4 +180,5 @@ zipOr x y = BAW.zipOr 0 (length x) 0 (length y) x y
 zipXor :: ByteArray -> ByteArray -> ByteArray
 zipXor x y = BAW.zipXor 0 (length x) 0 (length y) x y
 
-
+isAscii :: ByteArray -> Bool
+isAscii x = BAW.isAscii 0 (length x) x

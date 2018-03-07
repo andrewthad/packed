@@ -2,6 +2,8 @@
 {-# LANGUAGE BinaryLiterals #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UnboxedSums #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 {-# OPTIONS_GHC
  -Weverything
@@ -23,24 +25,48 @@ module Packed.Text
   , drop
   , dropEnd
   , length
+    -- * Encoding
+  , decodeAscii
+  , decodeResumeAscii
+  , decodeUtf8
+  , decodeResumeUtf8
+  , encodeUtf8
   ) where
 
 import Prelude hiding (map,take,drop,length)
 import Data.Char (ord,chr)
 import Data.Primitive (MutableByteArray)
 import Packed.Bytes.Small (ByteArray)
+import GHC.Exts (Word#)
+import GHC.Int (Int(I#))
 import GHC.Word (Word(W#),Word8(W8#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
 import Control.Monad.ST (ST,runST)
+import Packed.Bytes (Bytes(..))
 import qualified Data.Char
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Window as BAW
+import qualified Packed.Bytes as B
 import qualified Data.Primitive as PM
 
 data Text = Text
   {-# UNPACK #-} !ByteArray -- payload, normal UTF8-encoded text, nothing special like the unsliced variant
   {-# UNPACK #-} !Word -- offset in bytes, not in characters, first bit reserved
   {-# UNPACK #-} !Int -- length in bytes, not in characters
+-- The byte-multiplicity for text is always Multiple if
+-- a multi-byte character is present. If no multi-byte
+-- characters are present, it may be set to either single
+-- or multiple. Functions should try to set it to single
+-- when possible.
+
+instance Eq Text where
+  t1 == t2 = Bytes arr1 off1 len1 == Bytes arr2 off2 len2
+    where
+    !(!arr1,!off1,!len1,!_) = textMatch t1
+    !(!arr2,!off2,!len2,!_) = textMatch t2
+
+instance Show Text where
+  show = show . unpack 
 
 newtype Multiplicity = Multiplicity Word
   deriving Eq
@@ -183,13 +209,11 @@ countChars !arr !start0 !maxIndex = go start0 0
 oneByteChar :: Word8 -> Bool
 oneByteChar w = w .&. 0b10000000 == 0
 
--- this only works if you already know that it is not a
--- single-byte character.
 twoByteChar :: Word8 -> Bool
-twoByteChar w = w .&. 0b00100000 == 0
+twoByteChar w = w .&. 0b11100000 == 0b11000000
 
 threeByteChar :: Word8 -> Bool
-threeByteChar w = w .&. 0b00010000 == 0
+threeByteChar w = w .&. 0b11110000 == 0b11100000
 
 charFromTwoBytes :: Word8 -> Word8 -> Char
 charFromTwoBytes w1 w2 = wordToChar $
@@ -487,4 +511,55 @@ dropEnd :: Int -> Text -> Text
 -- required scanning UTF-8 encoded text backwards, which seems annoying
 -- to do.
 dropEnd !n !t = take (length t - n) t
+
+decodeAscii :: Bytes -> Maybe Text
+decodeAscii b = case decodeResumeAscii b of
+  (# t, (# | (# #) #) #) -> Just t
+  (# !_, (# !_ | #) #) -> Nothing
+-- decodeAscii b@(Bytes arr off len) = if B.isAscii b
+--   then Just (Text arr (buildOffMult off single) len)
+--   else Nothing
+
+decodeResumeAscii :: Bytes -> (# Text, (# Bytes | (# #) #) #)
+decodeResumeAscii (Bytes arr off len) = case BAW.findNonAscii' off len arr of
+  (# (# #) | #) -> (# Text arr (buildOffMult off single) len, (# | (# #) #) #)
+  (# | ix# #) -> 
+    let ix = I# ix#
+     in (# Text arr (buildOffMult off single) ix, (# (Bytes arr ix (len + off - ix)) | #) #)
+
+decodeUtf8 :: Bytes -> Maybe Text
+decodeUtf8 b = case decodeResumeUtf8 b of
+  (# !_, (# !_ | #) #) -> Nothing
+  (# !t, (# | (# (# #) | #) #) #) -> Just t
+  (# !_, (# | (# | !_ #) #) #) -> Nothing
+
+decodeResumeUtf8 ::
+     Bytes
+  -- -> (# Text, Either Bytes (Either () (Word,Word,Word)) #)
+  -> (# Text, (# Bytes | (# (# #) | (# Word#, Word#, Word# #) #) #) #)
+decodeResumeUtf8 (Bytes arr off len) = case BAW.isUtf8 off len arr of
+  (# ascii, (# ixFailure# | #) #) -> case ascii of
+    2## -> error "decodeResumeUtf8: surrogate byte, handle this"
+    _ -> 
+      let !ixFailure = I# ixFailure#
+       -- in (# Text arr (buildOffMult off (Multiplicity (W# ascii))) ixFailure, Left (Bytes arr ixFailure (len + off - ixFailure)) #)
+       in (# Text arr (buildOffMult off (Multiplicity (W# ascii))) ixFailure, (# (Bytes arr ixFailure (len + off - ixFailure)) | #) #)
+  (# ascii, (# | !remaining #) #) -> case ascii of
+    2## -> error "decodeResumeUtf8: surrogate byte, handle this"
+    -- _ -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , Right (convertTuple remaining) #)
+    -- _ -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | remaining #) #)
+    _ -> case remaining of
+      (# (# #) | #) -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | (# (# #) | #) #) #)
+      (# | (# w1, w2, w3 #) #) -> (# Text arr (buildOffMult off (Multiplicity (W# ascii))) len , (# | (# | (# w1, w2, w3 #) #) #) #)
+
+convertTuple :: (# (# #) | (# Word#, Word#, Word# #) #) -> Either () (Word,Word,Word)
+convertTuple (# (# #) | #) = Left ()
+convertTuple (# | w #) = Right (convertWordTuple w)
+
+convertWordTuple :: (# Word#, Word#, Word# #) -> (Word,Word,Word)
+convertWordTuple (# a,b,c #) = ( W# a, W# b, W# c )
+
+encodeUtf8 :: Text -> Bytes
+encodeUtf8 t = Bytes arr off len where
+  !(!arr,!off,!len,!_) = textMatch t
 

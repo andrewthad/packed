@@ -14,6 +14,7 @@ module Packed.Text.Small
   ( SmallText(..)
   , empty
   , reverse
+  , decodeAscii
   ) where
 
 import Prelude hiding (reverse)
@@ -37,6 +38,9 @@ newtype SmallText = SmallText ByteArray
 -- and it is assumed that the text contains code points from any range.
 -- The first byte is not allowed to be anything starting with 1.
 -- This bloats all non-English text by one byte.
+
+instance Eq SmallText where
+  SmallText a == SmallText b = a == b
 
 -- This is a boolean but with a more efficient way to
 -- do conjunction
@@ -70,3 +74,10 @@ reverse :: SmallText -> SmallText
 reverse (SmallText arr) = case unicodeRange arr of
   UnicodeRange 1 -> SmallText (BA.reverse arr)
   _ -> error "Text.Array.reverse: write the non-ascii case"
+
+decodeAscii :: ByteArray -> Maybe SmallText
+decodeAscii arr = if BA.isAscii arr
+  then Just (SmallText arr)
+  else Nothing
+
+
