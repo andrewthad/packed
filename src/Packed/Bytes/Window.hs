@@ -24,6 +24,7 @@ module Packed.Bytes.Window
   , zipOr
   , zipXor
   , equality
+  , hash
     -- * Characters
   , isAscii
   , isUtf8
@@ -35,8 +36,9 @@ import Data.Word (Word8)
 import GHC.Types (RuntimeRep,TYPE)
 import GHC.Int (Int(I#))
 import GHC.Word (Word8(W8#),Word(W#))
-import GHC.Exts (Int#,Word#,ByteArray#)
-import Data.Bits (xor,(.|.),(.&.),complement,unsafeShiftL)
+import GHC.Exts (Int#,Word#,ByteArray#,byteSwap#,word2Int#,(+#))
+import Data.Bits (xor,(.|.),(.&.),complement,unsafeShiftL,finiteBitSize,
+  unsafeShiftR)
 import Control.Monad.ST (ST,runST)
 import qualified Data.Primitive as PM
 
@@ -514,4 +516,209 @@ surrogate codepoint = codepoint >= 0xD800 && codepoint < 0xE000
 
 binaryOneThenZeroes :: Word
 binaryOneThenZeroes = maxBound - div (maxBound :: Word) 2
+
+hash ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> ByteArray -- ^ bytes
+  -> Int
+hash !off !len !arr =
+  hashFinalize (hashContinuation off len (# 0#, 0#, 0#, 0## #) arr)
+
+hashFinalize ::
+     (# Int#, Int#, Int#, Word# #) -- ^ leftovers
+  -> Int
+hashFinalize (# !pos, !needed, !h, !w #) =
+  (I# h) + ((((I# pos) * bytesInWord + I# needed) + (I# (word2Int# w))) * indexEntropy (I# pos))
+  -- I# h + I# needed + I# pos + I# (word2Int# w)
+
+hashContinuation ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
+  -> ByteArray -- ^ bytes
+  -> (# Int#, Int#, Int#, Word# #)
+hashContinuation !off !len !leftovers !arr = case isBigEndian of
+  True -> hashContinuationBigEndian off len leftovers arr
+  False -> hashContinuationLittleEndian off len leftovers arr
+
+hashContinuationBigEndian ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
+  -> ByteArray -- ^ bytes
+  -> (# Int#, Int#, Int#, Word# #)
+hashContinuationBigEndian !off !len !leftovers !arr =
+  hashContinuationInternal off len unsafeIndexWord leftovers arr
+
+hashContinuationLittleEndian ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
+  -> ByteArray -- ^ bytes
+  -> (# Int#, Int#, Int#, Word# #)
+hashContinuationLittleEndian !off !len !leftovers !arr =
+  hashContinuationInternal off len unsafeIndexWordLE leftovers arr
+
+unsafeIndexWordLE :: ByteArray -> Int -> Word
+unsafeIndexWordLE arr ix = 
+  let !(W# w) = unsafeIndexWord arr ix
+   in W# (byteSwap# w)
+
+{-# INLINE hashContinuationInternal #-}
+hashContinuationInternal ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> (ByteArray -> Int -> Word) -- ^ big endian index into bytearray
+  -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
+  -> ByteArray -- ^ bytes
+  -> (# Int#, Int#, Int#, Word# #)
+hashContinuationInternal !off !len0 normalizedIndexWord (# pos0# ,needed0#, acc0#, artifact0# #) !arr
+  -- Note that pos refers to the number of bytes processed so far,
+  -- while ix and off refer to a position in the current chunk. The value
+  -- of needed is bounded by [0,WORD_SIZE)
+  | len0 == 0 = -- empty byte array
+      (# pos0# ,needed0#, acc0#, artifact0# #) 
+  | machEnd == machStart = -- the byte array does not even strattle a word boundary
+      if needed0 >= len0
+        then
+          let !x = normalizedIndexWord arr machStart
+              !emptyRightBytes = bytesInWord - (end - (bytesInWord * machEnd))
+              !y = unsafeShiftR x (emptyRightBytes * bytesInWord) .&. rightwardOnes (bytesInWord * len0)
+              !adjustedArtifact = unsafeShiftL artifact0 (bytesInWord * len0) .|. y
+           in (# pos0#, unboxInt (needed0 - len0), acc0#, unboxWord adjustedArtifact #)
+        else
+          let !x = normalizedIndexWord arr machStart
+              !emptyRightBytes = bytesInWord - (end - (bytesInWord * machEnd))
+              !xAdjusted = unsafeShiftR x (emptyRightBytes * 8) .&. rightwardOnes (8 * needed0)
+              !xLeft = unsafeShiftR xAdjusted ((len0 - needed0) * 8)
+              !xRight = xAdjusted -- no need to mask it since that happens later
+              !fullArtifact = unsafeShiftL artifact0 (8 * needed0) .|. xLeft
+              !acc = acc0 + (wordToInt fullArtifact * indexEntropy pos0)
+           in (# pos0# +# 1#, unboxInt (bytesInWord - (len0 - needed0)), unboxInt acc, unboxWord xRight #)
+  | otherwise =
+      let !availableBytes = ((machStart + 1) * bytesInWord) - off
+          !x = normalizedIndexWord arr machStart
+       in if needed0 >= availableBytes
+            then
+              let !y = x .&. rightwardOnes (bytesInWord * availableBytes)
+                  !adjustedArtifact = unsafeShiftL artifact0 (8 * availableBytes) .|. y
+               in goMach adjustedArtifact acc0 (needed0 - availableBytes) (machStart + 1) pos0
+            else
+              let !xAdjusted = x .&. (if availableBytes == 8 then maxBound else rightwardOnes (bytesInWord * availableBytes))
+                  !neededBits = needed0 * 8
+                  !availableBits = availableBytes * 8
+                  !xLeft = rightwardOnes neededBits .&. unsafeShiftR xAdjusted (availableBits - neededBits)
+                  !xRight = xAdjusted -- no need to mask it since that happens later
+                  !fullArtifact = unsafeShiftL artifact0 neededBits .|. xLeft
+                  !acc = acc0 + (wordToInt fullArtifact * indexEntropy pos0)
+               in goMach xRight acc (bytesInWord - (availableBytes - needed0)) (machStart + 1) (pos0 + 1)
+  where
+  !pos0 = I# pos0#
+  !acc0 = I# acc0#
+  !needed0 = I# needed0#
+  !artifact0 = W# artifact0#
+  !end = len0 + off
+  !machStart = quot off bytesInWord
+  !machEnd = quot end bytesInWord
+  goMach :: Word -> Int -> Int -> Int -> Int -> (# Int#, Int#, Int#, Word# #)
+  goMach !artifact !acc !needed !machIx !pos = if machIx < machEnd
+    then 
+      let !x = normalizedIndexWord arr machIx
+          !neededBits = needed * 8
+          !complete = unsafeShiftL artifact neededBits .|. (rightwardOnes neededBits .&. (unsafeShiftR x (bitsInWord - neededBits)))
+          !newAcc = acc + (wordToInt complete * indexEntropy pos)
+       in goMach x newAcc needed (machIx + 1) (pos + 1)
+    else
+      let !ix = machIx * bytesInWord
+       in if end == ix -- we do not read past the end if the end is machine-word-aligned
+            then 
+              let !truncatedArtifact = rightwardOnes (bitsInWord - (8 * needed)) .&. artifact
+               in (# unboxInt pos, unboxInt needed, unboxInt acc, unboxWord truncatedArtifact #)
+            else 
+              let !availableBytes = end - ix
+                  !x = normalizedIndexWord arr machEnd
+                  !y = unsafeShiftR x (bitsInWord - (availableBytes * 8))
+               in if needed >= availableBytes
+                    then 
+                      let !newNeeded = needed - availableBytes
+                          !adjustedArtifact = rightwardOnes (bitsInWord - 8 * newNeeded) .&. (unsafeShiftL artifact (8 * availableBytes) .|. y)
+                       in (# unboxInt pos, unboxInt newNeeded, unboxInt acc, unboxWord adjustedArtifact #)
+                    else 
+                      let !leftoverBits = (availableBytes - needed) * 8
+                          !yLeft = unsafeShiftR y leftoverBits
+                          !yRight = if leftoverBits == bitsInWord then y else rightwardOnes leftoverBits .&. y 
+                          !fullArtifact = unsafeShiftL artifact (8 * needed) .|. yLeft
+                          !acc1 = acc + (wordToInt fullArtifact * indexEntropy pos)
+                       in (# unboxInt (pos + 1), unboxInt (bytesInWord - (availableBytes - needed)), unboxInt acc1, unboxWord yRight #)
+
+bitsInWord :: Int
+bitsInWord = finiteBitSize (undefined :: Word)
+
+bytesInWord :: Int
+bytesInWord = PM.sizeOf (undefined :: Word)
+
+
+-- divideEight :: Int -> Int
+-- divideEight x = unsafeShiftR x 3
+
+-- A simple runtime test to determine the endianness of the
+-- current platform. We assume that there are only big and
+-- little endian architectures, no mixed endian.
+isBigEndian :: Bool
+isBigEndian = runST $ do
+  m <- PM.newByteArray 8
+  PM.writeByteArray m 0 (0xFF :: Word)
+  w <- PM.readByteArray m 7
+  return ((w :: Word8) == 0xFF)
+
+wordToInt :: Word -> Int
+wordToInt = fromIntegral
+
+-- must be a power of two
+entropyCount :: Int
+entropyCount = 32
+
+indexEntropy :: Int -> Int
+indexEntropy !ix = PM.indexByteArray entropy ((entropyCount - 1) .&. ix)
+
+rightwardOnes :: Int -> Word
+rightwardOnes n = unsafeShiftL 1 n - 1
+
+entropy :: ByteArray
+entropy = runST $ do
+  m <- PM.newByteArray (PM.sizeOf (undefined :: Word) * entropyCount)
+  PM.writeByteArray m 0 (617707546069929154 :: Word)
+  PM.writeByteArray m 1 (6682345199508406648 :: Word)
+  PM.writeByteArray m 2 (6310923555544635067 :: Word)
+  PM.writeByteArray m 3 (3973807439685559157 :: Word)
+  PM.writeByteArray m 4 (5705095456520067183 :: Word)
+  PM.writeByteArray m 5 (17211710136821461354 :: Word)
+  PM.writeByteArray m 6 (2376629791045299279 :: Word)
+  PM.writeByteArray m 7 (13844255342107024509 :: Word)
+  PM.writeByteArray m 8 (8105732563521910658 :: Word)
+  PM.writeByteArray m 9 (3328345347683869262 :: Word)
+  PM.writeByteArray m 10 (2025396771326196395 :: Word)
+  PM.writeByteArray m 11 (8695877615251000017 :: Word)
+  PM.writeByteArray m 12 (8964413731492633942 :: Word)
+  PM.writeByteArray m 13 (13449421079475920163 :: Word)
+  PM.writeByteArray m 14 (3821811081509623085 :: Word)
+  PM.writeByteArray m 15 (8419963512810155517 :: Word)
+  PM.writeByteArray m 16 (9940200863537997427 :: Word)
+  PM.writeByteArray m 17 (6533990359009873090 :: Word)
+  PM.writeByteArray m 18 (11280500408256267616 :: Word)
+  PM.writeByteArray m 19 (8049166832523271311 :: Word)
+  PM.writeByteArray m 20 (17172297100006479810 :: Word)
+  PM.writeByteArray m 21 (143326536574493876 :: Word)
+  PM.writeByteArray m 22 (6114048204379035182 :: Word)
+  PM.writeByteArray m 23 (2062534466603314242 :: Word)
+  PM.writeByteArray m 24 (5855932815128068486 :: Word)
+  PM.writeByteArray m 25 (13039379742431507962 :: Word)
+  PM.writeByteArray m 26 (16313462579378763245 :: Word)
+  PM.writeByteArray m 27 (11167449627757254138 :: Word)
+  PM.writeByteArray m 28 (16911458830843305158 :: Word)
+  PM.writeByteArray m 29 (17253354353552921592 :: Word)
+  PM.writeByteArray m 30 (1077702315143872395 :: Word)
+  PM.writeByteArray m 31 (16765544009052968283 :: Word)
+  PM.unsafeFreezeByteArray m
 

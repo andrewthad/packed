@@ -25,6 +25,7 @@ module Packed.Bytes.Small
   , cons
   , uncons
   , reverse
+  , hash
     -- * Zip
   , zipAnd
   , zipOr
@@ -182,3 +183,6 @@ zipXor x y = BAW.zipXor 0 (length x) 0 (length y) x y
 
 isAscii :: ByteArray -> Bool
 isAscii x = BAW.isAscii 0 (length x) x
+
+hash :: ByteArray -> Int
+hash arr = BAW.hash 0 (length arr) arr

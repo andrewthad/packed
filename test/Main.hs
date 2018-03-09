@@ -45,6 +45,7 @@ tests = testGroup "Tests"
     ]
   , testGroup "Bytes"
     [ testProperty "findByte" sliceFindByteProp
+    , testProperty "hash" byteHashProp
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
@@ -61,6 +62,25 @@ tests = testGroup "Tests"
     ]
   ]
 
+byteHashProp :: Property
+byteHashProp = property $ do
+  byteList <- forAll $ list (linear 0 128) genByte
+  front <- forAll (genOffset (L.length byteList))
+  frontJitterA <- forAll $ int (linear 0 front)
+  frontJitterB <- pure 0
+  -- frontJitterB <- forAll $ int (linear 0 front)
+  -- back <- forAll (genOffset (L.length byteList))
+  back <- pure 0
+  backJitterA <- forAll $ int (linear 0 back)
+  backJitterB <- forAll $ int (linear 0 back)
+  let byteListA = listDropEnd backJitterA (L.drop frontJitterA byteList)
+      byteListB = listDropEnd backJitterB (L.drop frontJitterB byteList)
+      bytesA = B.dropEnd (back - backJitterA) (B.drop (front - frontJitterA) (B.pack byteListA))
+      bytesB = B.dropEnd (back - backJitterB) (B.drop (front - frontJitterB) (B.pack byteListB))
+  bytesA === bytesB
+  -- B.hash bytesA - B.hash bytesB === 0
+  B.hash bytesA === B.hash bytesB
+  
 isAscii :: Word8 -> Bool
 isAscii w = w < 128
 
@@ -221,8 +241,6 @@ genMostlyAsciiBytes = choice
     ]
   , list (linear 0 45) (word8 (linear 0x00 0x7F))
   ]
-
-
 
 findByteProp :: Property
 findByteProp = property $ do

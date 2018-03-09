@@ -9,6 +9,8 @@ import Packed.Bytes (Bytes)
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Text as T
 import qualified GHC.OldList as L
+import qualified Data.ByteString as BS
+import qualified Data.Hashable as H
 
 main :: IO ()
 main = do
@@ -16,6 +18,10 @@ main = do
     [ bgroup "ByteArray"
       [ bench "findByte" $ whnf (BA.findByte 0x80) byteArrayA
       , bench "zipAnd" $ whnf (BA.zipAnd byteArrayA) byteArrayB
+      , bgroup "hash"
+        [ bench "packed" $ whnf BA.hash byteArrayA
+        , bench "platform" $ whnf H.hash byteStringA
+        ]
       ]
     , bgroup "Text"
       [ bgroup "toUpper"
@@ -39,6 +45,9 @@ byteArrayA = BA.pack $ L.concat
   , [0x80]
   , L.take 2000 (L.cycle (enumFromTo 0xB0 0xFF))
   ]
+
+byteStringA :: BS.ByteString
+byteStringA = BS.pack (BA.unpack byteArrayA)
 
 byteArrayB :: ByteArray
 byteArrayB = BA.pack $ L.concat

@@ -20,6 +20,7 @@ module Packed.Bytes
   , take
   , empty
   , findByte
+  , hash
     -- * Characters
   , isAscii
   ) where
@@ -41,6 +42,9 @@ instance Eq Bytes where
     if lenA == lenB
       then BAW.equality offA offB lenA arrA arrB
       else False
+
+instance Show Bytes where
+  show x = "pack " ++ show (unpack x)
 
 pack :: [Word8] -> Bytes
 pack bs = let arr = BA.pack bs in Bytes arr 0 (BA.length arr)
@@ -90,6 +94,9 @@ empty = Bytes BA.empty 0 0
 
 isAscii :: Bytes -> Bool
 isAscii (Bytes arr off len) = BAW.isAscii off len arr
+
+hash :: Bytes -> Int
+hash (Bytes arr off len) = BAW.hash off len arr
 
 -- In this implementation, we overallocate on each side to
 -- make things line up with machine word boundaries. This
