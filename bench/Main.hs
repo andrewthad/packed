@@ -19,8 +19,14 @@ main = do
       [ bench "findByte" $ whnf (BA.findByte 0x80) byteArrayA
       , bench "zipAnd" $ whnf (BA.zipAnd byteArrayA) byteArrayB
       , bgroup "hash"
-        [ bench "packed" $ whnf BA.hash byteArrayA
-        , bench "platform" $ whnf H.hash byteStringA
+        [ bgroup "packed"
+            [ bench "large" $ whnf BA.hash byteArrayA
+            , bench "small" $ whnf BA.hash byteArrayTiny
+            ]
+        , bgroup "platform"
+            [ bench "large" $ whnf H.hash byteStringA
+            , bench "small" $ whnf H.hash byteStringTiny
+            ]
         ]
       ]
     , bgroup "Text"
@@ -55,6 +61,12 @@ byteArrayB = BA.pack $ L.concat
   , [0x70]
   , L.take 3000 (L.cycle (enumFromTo 0x20 0x60))
   ]
+
+byteArrayTiny :: ByteArray
+byteArrayTiny = BA.take 20 byteArrayA
+
+byteStringTiny :: BS.ByteString
+byteStringTiny = BS.pack (BA.unpack byteArrayTiny)
 
 encodedAscii5000 :: Bytes
 encodedAscii5000 = T.encodeUtf8 textAscii5000
