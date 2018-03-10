@@ -26,6 +26,7 @@ module Packed.Bytes.Small
   , uncons
   , reverse
   , hash
+  , hashWith
     -- * Zip
   , zipAnd
   , zipOr
@@ -186,3 +187,6 @@ isAscii x = BAW.isAscii 0 (length x) x
 
 hash :: ByteArray -> Int
 hash arr = BAW.hash 0 (length arr) arr
+
+hashWith :: Int -> ByteArray -> Int
+hashWith salt arr = BAW.hashWith 0 (length arr) salt arr

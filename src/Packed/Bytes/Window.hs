@@ -25,6 +25,7 @@ module Packed.Bytes.Window
   , zipXor
   , equality
   , hash
+  , hashWith
     -- * Characters
   , isAscii
   , isUtf8
@@ -522,8 +523,16 @@ hash ::
   -> Int -- ^ length
   -> ByteArray -- ^ bytes
   -> Int
-hash !off !len !arr =
-  hashFinalize (hashContinuation off len (# 0#, 0#, 0#, 0## #) arr)
+hash !off !len = hashWith off len 0
+
+hashWith ::
+     Int -- ^ offset
+  -> Int -- ^ length
+  -> Int -- ^ salt
+  -> ByteArray -- ^ bytes
+  -> Int
+hashWith !off !len (I# salt) !arr =
+  hashFinalize (hashContinuation off len (# salt, 0#, 0#, 0## #) arr)
 
 hashFinalize ::
      (# Int#, Int#, Int#, Word# #) -- ^ leftovers

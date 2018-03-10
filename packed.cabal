@@ -30,7 +30,7 @@ library
     Packed.Bytes.Window
     Packed.Bytes.Mutable
     Packed.Bytes.Small
-    -- Packed.Bytes.Table
+    Packed.Bytes.Table
     Packed.Text
     Packed.Text.Small
   default-language: Haskell2010
