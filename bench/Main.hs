@@ -5,12 +5,24 @@ import Gauge.Main (defaultMain)
 import Packed.Bytes.Small (ByteArray)
 import Packed.Text (Text)
 import Packed.Bytes (Bytes)
+import Packed.Bytes.Table (BytesTable)
+import Data.Primitive (Array)
+import Data.HashMap.Strict (HashMap)
+import Data.ByteString (ByteString)
+import Data.Foldable (foldl',toList)
+import Data.Maybe (isJust)
+import Data.Char (ord,toUpper)
+import GHC.Exts (fromList)
 
-import qualified Packed.Bytes.Small as BA
-import qualified Packed.Text as T
-import qualified GHC.OldList as L
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BC
+import qualified Data.HashMap.Strict as HM
+import qualified Packed.Bytes as B
 import qualified Data.Hashable as H
+import qualified GHC.OldList as L
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Bytes.Table as BT
+import qualified Packed.Text as T
 
 main :: IO ()
 main = do
@@ -20,13 +32,17 @@ main = do
       , bench "zipAnd" $ whnf (BA.zipAnd byteArrayA) byteArrayB
       , bgroup "hash"
         [ bgroup "packed"
-            [ bench "large" $ whnf BA.hash byteArrayA
-            , bench "small" $ whnf BA.hash byteArrayTiny
+            [ bench "large" $ whnf (BA.hash 0x80) byteArrayA
+            , bench "small" $ whnf (BA.hash 0x80) byteArrayTiny
             ]
         , bgroup "platform"
             [ bench "large" $ whnf H.hash byteStringA
             , bench "small" $ whnf H.hash byteStringTiny
             ]
+        ]
+      , bgroup "Table"
+        [ bench "packed" $ whnf packedLookupAll packedBytesTable
+        , bench "platform" $ whnf platformLookupAll platformBytesTable
         ]
       ]
     , bgroup "Text"
@@ -115,5 +131,208 @@ textAsian5000 = T.pack $ L.take 5000 $ L.cycle $ L.concat
 --   , "arrivée à la colonie. Après la naissance de Suzanne, la mère abandonna "
 --   , "l'enseignement d'état. "
 --   ]
-  
 
+platformBytesTable :: HashMap ByteString ()
+platformBytesTable = HM.fromList
+  $ map (\s -> (BC.pack s, ())) longEnglishWords
+
+platformLongEnglishWords :: Array ByteString
+platformLongEnglishWords = fromList
+  $ map (\s -> BC.pack s) longEnglishWords
+
+packedBytesTable :: BytesTable ()
+packedBytesTable = BT.fromList
+  $ fmap (\b -> (b,())) packedLongEnglishWordsList
+
+packedLongEnglishWords :: Array Bytes
+packedLongEnglishWords = fromList packedLongEnglishWordsList
+
+packedLongEnglishWordsList :: [Bytes]
+packedLongEnglishWordsList =
+  fmap (\s -> B.pack (map (\c -> fromIntegral (ord c)) s)) longEnglishWords
+
+packedLookupAll :: BytesTable () -> Bool
+packedLookupAll t =
+  foldl' (\acc b -> acc && isJust (BT.lookup b t)) True packedLongEnglishWords
+
+platformLookupAll :: HashMap ByteString () -> Bool
+platformLookupAll t =
+  foldl' (\acc b -> acc && isJust (HM.lookup b t)) True platformLongEnglishWords
+
+longEnglishWords :: [String]
+longEnglishWords = map (map toUpper) xs ++ xs
+  where 
+  xs = 
+    [ "sedimentologically"
+    , "semiconservatively"
+    , "semidomestications"
+    , "semipermeabilities"
+    , "semiprofessionally"
+    , "semiquantitatively"
+    , "sentimentalization"
+    , "shortsightednesses"
+    , "simplemindednesses"
+    , "simultaneousnesses"
+    , "sociopsychological"
+    , "somnambulistically"
+    , "soporiferousnesses"
+    , "spectrofluorimeter"
+    , "spectrofluorometer"
+    , "spectrofluorometry"
+    , "spectrographically"
+    , "spectroheliographs"
+    , "spectroheliography"
+    , "spectrohelioscopes"
+    , "spectrophotometers"
+    , "spectrophotometric"
+    , "sphygmomanometries"
+    , "stereophotographic"
+    , "stereoregularities"
+    , "stereospecifically"
+    , "stoichiometrically"
+    , "stoutheartednesses"
+    , "structuralizations"
+    , "subcategorizations"
+    , "subclassifications"
+    , "subconsciousnesses"
+    , "submicroscopically"
+    , "substitutabilities"
+    , "superadministrator"
+    , "superciliousnesses"
+    , "supercivilizations"
+    , "superconglomerates"
+    , "superintellectuals"
+    , "superintelligences"
+    , "factorization"
+    , "factualnesses"
+    , "facultatively"
+    , "faddishnesses"
+    , "faithlessness"
+    , "fallibilities"
+    , "falsification"
+    , "familiarising"
+    , "familiarities"
+    , "familiarizing"
+    , "fanaticalness"
+    , "fantastically"
+    , "fantasticated"
+    , "fantasticates"
+    , "farcicalities"
+    , "farkleberries"
+    , "fasciculation"
+    , "fascinatingly"
+    , "fascistically"
+    , "fashionmonger"
+    , "fatefulnesses"
+    , "fatheadedness"
+    , "fatuousnesses"
+    , "faultfindings"
+    , "faultlessness"
+    , "faunistically"
+    , "favorableness"
+    , "fearfulnesses"
+    , "feasibilities"
+    , "featherbedded"
+    , "featherbrains"
+    , "featheredging"
+    , "featherheaded"
+    , "featherstitch"
+    , "featherweight"
+    , "feelingnesses"
+    , "felicitations"
+    , "fellmongeries"
+    , "fellmongering"
+    , "fellowshiping"
+    , "fellowshipped"
+    , "feloniousness"
+    , "feminizations"
+    , "fencelessness"
+    , "fenestrations"
+    , "fermentations"
+    , "ferociousness"
+    , "ferricyanides"
+    , "ferrimagnetic"
+    , "ferroconcrete"
+    , "ferrocyanides"
+    , "ferroelectric"
+    , "ferromagnetic"
+    , "ferrosilicons"
+    , "fertilenesses"
+    , "fertilization"
+    , "festivalgoers"
+    , "festivenesses"
+    , "feudalization"
+    , "feuilletonism"
+    , "feuilletonist"
+    , "fianchettoing"
+    , "fiberglassing"
+    , "fiberizations"
+    , "fibrillations"
+    , "fibrinolysins"
+    , "fibrosarcomas"
+    , "fibrovascular"
+    , "fictionalised"
+    , "fictionalises"
+    , "fictionalized"
+    , "fictionalizes"
+    , "fictioneering"
+    , "fictivenesses"
+    , "fidgetinesses"
+    , "fieldstripped"
+    , "filibusterers"
+    , "filibustering"
+    , "filmographies"
+    , "filterability"
+    , "finalizations"
+    , "fingerpicking"
+    , "fingerprinted"
+    , "finicalnesses"
+    , "finickinesses"
+    , "firefightings"
+    , "fishabilities"
+    , "fittingnesses"
+    , "flabbergasted"
+    , "flagellantism"
+    , "flagellations"
+    , "flamboyancies"
+    , "flameproofers"
+    , "flameproofing"
+    , "flamethrowers"
+    , "flavoproteins"
+    , "flexibilities"
+    , "flexographies"
+    , "flightinesses"
+    , "flirtatiously"
+    , "flocculations"
+    , "floodlighting"
+    , "floricultural"
+    , "floricultures"
+    , "floristically"
+    , "flourishingly"
+    , "flowchartings"
+    , "flowerinesses"
+    , "fluctuational"
+    , "flugelhornist"
+    , "fluidextracts"
+    , "fluidizations"
+    , "fluorescences"
+    , "fluoridations"
+    , "fluorimetries"
+    , "fluorinations"
+    , "fluorocarbons"
+    , "fluorochromes"
+    , "fluorographic"
+    , "fluorometries"
+    , "fluoroscopies"
+    , "fluoroscoping"
+    , "fluoroscopist"
+    , "fluorouracils"
+    , "fluphenazines"
+    , "flutterboards"
+    , "focalizations"
+    , "folkishnesses"
+    , "followerships"
+    , "foolhardiness"
+    , "foolishnesses"
+    , "foppishnesses"
+    ]

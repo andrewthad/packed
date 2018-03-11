@@ -21,6 +21,10 @@ module Packed.Bytes
   , empty
   , findByte
   , hash
+  , hashWith
+    -- * Unsliced Byte Arrays
+  , toByteArray
+  , equalsByteArray
     -- * Characters
   , isAscii
   ) where
@@ -95,8 +99,19 @@ empty = Bytes BA.empty 0 0
 isAscii :: Bytes -> Bool
 isAscii (Bytes arr off len) = BAW.isAscii off len arr
 
-hash :: Bytes -> Int
-hash (Bytes arr off len) = BAW.hash off len arr
+hash ::
+     Int -- ^ buckets
+  -> Bytes -- ^ array
+  -> Int
+hash = hashWith 0
+
+hashWith ::
+     Int -- ^ salt
+  -> Int -- ^ buckets
+  -> Bytes -- ^ array
+  -> Int
+hashWith salt buckets (Bytes arr off len) =
+  BAW.hashWith off len salt buckets arr
 
 -- In this implementation, we overallocate on each side to
 -- make things line up with machine word boundaries. This
@@ -106,3 +121,14 @@ hash (Bytes arr off len) = BAW.hash off len arr
 --   let !leftWordIx = quot off (PM.sizeOf (undefined :: Word))
 --       !rightWordIx = quot (off + len) (PM.sizeOf (undefined :: Word))
 
+-- | Copy the 'Bytes', discarded unneeded data outside of
+--   the slice.
+toByteArray :: Bytes -> ByteArray
+toByteArray (Bytes arr off len) = BAW.slice off len arr
+
+-- | Check for equality of sliced 'Bytes' and an unsliced 'ByteArray'.
+equalsByteArray :: ByteArray -> Bytes -> Bool
+equalsByteArray arr1 (Bytes arr2 off2 len2) =
+  if BA.length arr1 == len2
+    then BAW.equals 0 off2 len2 arr1 arr2
+    else False

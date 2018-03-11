@@ -24,12 +24,14 @@ import Packed.Bytes (Bytes)
 import Packed.Bytes.Small (ByteArray)
 import GHC.Int (Int(I#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR)
+import Control.Monad (forM_)
 
 import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
 import qualified Packed.Text as T
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Window as BAW
+import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes as B
 import qualified Data.Set as S
 import qualified GHC.OldList as L
@@ -46,6 +48,10 @@ tests = testGroup "Tests"
   , testGroup "Bytes"
     [ testProperty "findByte" sliceFindByteProp
     , testProperty "hash" byteHashProp
+    , testProperty "toByteArray" byteToByteArray
+    , testGroup "Table"
+      [ testProperty "lookup" byteTableLookupProp
+      ]
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
@@ -61,6 +67,14 @@ tests = testGroup "Tests"
       ]
     ]
   ]
+
+byteTableLookupProp :: Property
+byteTableLookupProp = property $ do
+  bytesList <- forAll $ list (linear 0 32) genBytes
+  let pairs = map (\x -> (x,x)) bytesList
+      table = BT.fromList pairs
+  forM_ bytesList $ \bytes -> do
+    BT.lookup bytes table === Just bytes
 
 byteHashProp :: Property
 byteHashProp = property $ do
@@ -79,7 +93,7 @@ byteHashProp = property $ do
       bytesB = B.dropEnd (back - backJitterB) (B.drop (front - frontJitterB) (B.pack byteListB))
   bytesA === bytesB
   -- B.hash bytesA - B.hash bytesB === 0
-  B.hash bytesA === B.hash bytesB
+  B.hash 0x800000 bytesA === B.hash 0x800000 bytesB
   
 isAscii :: Word8 -> Bool
 isAscii w = w < 128
@@ -232,6 +246,13 @@ genCharUnicode = choice
 genByte :: Gen Word8
 genByte = word8 (linear minBound maxBound)
 
+genBytes :: Gen Bytes
+genBytes = do
+  byteList <- list (linear 0 64) genByte
+  front <- genOffset (L.length byteList)
+  back <- genOffset (L.length byteList)
+  return (B.dropEnd back (B.drop front (B.pack byteList)))
+
 genMostlyAsciiBytes :: Gen [Word8]
 genMostlyAsciiBytes = choice
   [ apcat
@@ -269,6 +290,14 @@ sliceFindByteProp = property $ do
   let expected = L.elemIndex w truncatedByteList
       actual = B.findByte w (B.dropEnd back (B.drop front (B.pack byteList)))
   expected === actual
+
+byteToByteArray :: Property
+byteToByteArray = property $ do
+  byteList <- forAll (list (linear 0 128) genByte)
+  front <- forAll (genOffset (L.length byteList))
+  back <- forAll (genOffset (L.length byteList))
+  let bytes = B.dropEnd back (B.drop front (B.pack byteList))
+  B.equalsByteArray (B.toByteArray bytes) bytes === True
 
 
 zipAndProp :: Property

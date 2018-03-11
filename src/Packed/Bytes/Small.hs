@@ -185,8 +185,16 @@ zipXor x y = BAW.zipXor 0 (length x) 0 (length y) x y
 isAscii :: ByteArray -> Bool
 isAscii x = BAW.isAscii 0 (length x) x
 
-hash :: ByteArray -> Int
-hash arr = BAW.hash 0 (length arr) arr
+hash ::
+     Int -- ^ buckets
+  -> ByteArray -- ^ array
+  -> Int
+hash = hashWith 0
 
-hashWith :: Int -> ByteArray -> Int
-hashWith salt arr = BAW.hashWith 0 (length arr) salt arr
+hashWith ::
+     Int -- ^ salt
+  -> Int -- ^ buckets
+  -> ByteArray -- ^ array
+  -> Int
+hashWith salt buckets arr =
+  BAW.hashWith 0 (length arr) salt buckets arr
