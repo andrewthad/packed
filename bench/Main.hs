@@ -160,7 +160,10 @@ platformLookupAll t =
   foldl' (\acc b -> acc && isJust (HM.lookup b t)) True platformLongEnglishWords
 
 longEnglishWords :: [String]
-longEnglishWords = map (map toUpper) xs ++ xs
+longEnglishWords = do
+  i <- enumFromTo (1 :: Int) 130
+  s <- xs
+  return (show i ++ s)
   where 
   xs = 
     [ "sedimentologically"
