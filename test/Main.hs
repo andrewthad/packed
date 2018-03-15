@@ -195,10 +195,8 @@ textToUpperProp = property $ do
 byteStreamAppendProp :: Property
 byteStreamAppendProp = property $ do
   wordList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
-  let stream = foldMap (Stream.singleton . charToWord8) (show w)
-  let v = runST $ do
-        Parser.Result Nothing (Just v) <- Parser.parseStreamST stream Parser.decimalWord
-        return v
+  let stream = foldMap Stream.singleton wordList
+  let v = runST $ Stream.unpackST stream
   wordList === v
 
 byteParserDecimalWord :: Property

@@ -10,6 +10,7 @@ module Packed.Bytes.Stream
   , empty
   , singleton
   , unpack
+  , unpackST
   , fromHandle
   ) where
 
@@ -21,6 +22,7 @@ import GHC.Int (Int(I#))
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Small (ByteArray(..))
 import System.IO (Handle)
+import GHC.ST (ST(..))
 import qualified Data.Primitive as PM
 import qualified Data.Semigroup as SG
 import qualified Packed.Bytes as B
@@ -81,7 +83,7 @@ unpackInternal :: ByteStream s -> State# s -> (# State# s, [Word8] #)
 unpackInternal (ByteStream f) s0 = case f s0 of
   (# s1, r #) -> case r of
     (# (# #) | #) -> (# s1, [] #)
-    (# | (# bytes, stream #) #) -> case unpackInternal (ByteStream f) s1 of
+    (# | (# bytes, stream #) #) -> case unpackInternal stream s1 of
       (# s2, ws #) -> (# s2, B.unpack (boxBytes bytes) ++ ws #)
 
 unpack :: ByteStream RealWorld -> IO [Word8]
