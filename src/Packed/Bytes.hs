@@ -12,16 +12,17 @@
 
 module Packed.Bytes
   ( Bytes(..)
-  , null
+  , empty
+  , singleton
   , pack
   , unpack
+  , null
   , drop
   , dropEnd
   , replicate
   , length
   , foldl'
   , take
-  , empty
   , findByte
   , hash
   , hashWith
@@ -114,6 +115,9 @@ take !n (Bytes arr off len) = if n < len
 
 empty :: Bytes
 empty = Bytes BA.empty 0 0
+
+singleton :: Word8 -> Bytes
+singleton w = Bytes (BA.singleton w) 0 1
 
 -- empty# :: Bytes#
 -- empty# = (# arr, 0#, 0# #)

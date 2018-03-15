@@ -9,7 +9,7 @@
 import Data.Set (Set)
 import Data.Word (Word8)
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
-import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8)
+import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
 import Hedgehog.Range (Range,linear)
 import Test.Tasty (defaultMain,testGroup,TestTree)
 import Data.Bits ((.&.))
@@ -25,6 +25,7 @@ import Packed.Bytes.Small (ByteArray)
 import GHC.Int (Int(I#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR)
 import Control.Monad (forM_)
+import Control.Monad.ST (ST,runST)
 
 import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
@@ -35,6 +36,8 @@ import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes as B
 import qualified Data.Set as S
 import qualified GHC.OldList as L
+import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Parser as Parser
 
 main :: IO ()
 main = defaultMain tests
@@ -52,9 +55,12 @@ tests = testGroup "Tests"
     , testGroup "Table"
       [ testProperty "lookup" byteTableLookupProp
       ]
-    , testGroup "Parser"
-      [ testProperty "decimalWord" byteParserDecimalWord
+    , testGroup "Stream"
+      [ testProperty "append" byteStreamAppendProp
       ]
+    -- , testGroup "Parser"
+    --   [ testProperty "decimalWord" byteParserDecimalWord
+    --   ]
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
@@ -185,6 +191,27 @@ textToUpperProp = property $ do
   let expected = L.map Data.Char.toUpper (listDropEnd back (L.drop front chars))
       actual = T.unpack (T.toUpper (T.dropEnd back (T.drop front (T.pack chars))))
   expected === actual
+
+byteStreamAppendProp :: Property
+byteStreamAppendProp = property $ do
+  wordList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
+  let stream = foldMap (Stream.singleton . charToWord8) (show w)
+  let v = runST $ do
+        Parser.Result Nothing (Just v) <- Parser.parseStreamST stream Parser.decimalWord
+        return v
+  wordList === v
+
+byteParserDecimalWord :: Property
+byteParserDecimalWord = property $ do
+  w <- forAll (word (linear minBound maxBound))
+  let stream = foldMap (Stream.singleton . charToWord8) (show w)
+  let v = runST $ do
+        Parser.Result Nothing (Just v) <- Parser.parseStreamST stream Parser.decimalWord
+        return v
+  w === v
+
+charToWord8 :: Char -> Word8
+charToWord8 = fromIntegral . Data.Char.ord
 
 listDropEnd :: Int -> [a] -> [a]
 listDropEnd n xs = L.take (L.length xs - n) xs

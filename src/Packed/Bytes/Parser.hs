@@ -17,6 +17,9 @@
 module Packed.Bytes.Parser
   ( Parser(..)
   , ParserLevity(..)
+  , Result(..)
+  , Leftovers(..)
+  , parseStreamST
   , decimalWord
   ) where
 
