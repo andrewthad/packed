@@ -31,6 +31,8 @@ library
     Packed.Bytes.Mutable
     Packed.Bytes.Small
     Packed.Bytes.Table
+    Packed.Bytes.Parser
+    Packed.Bytes.Stream
     Packed.Text
     Packed.Text.Small
   default-language: Haskell2010

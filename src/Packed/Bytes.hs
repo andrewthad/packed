@@ -1,4 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 {-# OPTIONS_GHC
  -Weverything
@@ -10,6 +12,7 @@
 
 module Packed.Bytes
   ( Bytes(..)
+  , null
   , pack
   , unpack
   , drop
@@ -27,19 +30,32 @@ module Packed.Bytes
   , equalsByteArray
     -- * Characters
   , isAscii
+    -- * IO
+  , hGetSome
   ) where
 
-import Prelude hiding (take,length,replicate,drop)
+import Prelude hiding (take,length,replicate,drop,null)
 
 import Packed.Bytes.Small (ByteArray(..))
 import Data.Word (Word8)
+import GHC.Ptr (Ptr(..))
+import GHC.Exts (RealWorld,State#,Int#,MutableByteArray#,Addr#,ByteArray#,
+  copyAddrToByteArray#,isMutableByteArrayPinned#,(>#))
+import GHC.Int (Int(I#))
+import GHC.IO (IO(..))
+import System.IO (Handle)
+import qualified Foreign.Marshal.Alloc as FMA
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes.Small as BA
+import qualified System.IO as SIO
+import qualified Data.Primitive as PM
 
 data Bytes = Bytes
   {-# UNPACK #-} !ByteArray -- payload
   {-# UNPACK #-} !Int -- offset
   {-# UNPACK #-} !Int -- length
+
+type Bytes# = (# ByteArray#, Int#, Int# #)
 
 instance Eq Bytes where
   Bytes arrA offA lenA == Bytes arrB offB lenB =
@@ -49,6 +65,9 @@ instance Eq Bytes where
 
 instance Show Bytes where
   show x = "pack " ++ show (unpack x)
+
+null :: Bytes -> Bool
+null (Bytes _ _ len) = len < 1
 
 pack :: [Word8] -> Bytes
 pack bs = let arr = BA.pack bs in Bytes arr 0 (BA.length arr)
@@ -96,6 +115,11 @@ take !n (Bytes arr off len) = if n < len
 empty :: Bytes
 empty = Bytes BA.empty 0 0
 
+-- empty# :: Bytes#
+-- empty# = (# arr, 0#, 0# #)
+--   where
+--   !(ByteArray arr) = BA.empty
+
 isAscii :: Bytes -> Bool
 isAscii (Bytes arr off len) = BAW.isAscii off len arr
 
@@ -132,3 +156,60 @@ equalsByteArray arr1 (Bytes arr2 off2 len2) =
   if BA.length arr1 == len2
     then BAW.equals 0 off2 len2 arr1 arr2
     else False
+
+hGetSome :: Int -> Handle -> IO Bytes
+hGetSome !n !h = do
+  !marr <- PM.newByteArray n
+  !receivedByteCount <- withBytePtr marr $ \addr -> SIO.hGetBufSome h (addrToPtr addr) n
+  !arr <- PM.unsafeFreezeByteArray marr
+  let arr' = dwindle# (# unboxByteArray arr, 0#, unboxInt receivedByteCount #)
+  return (boxBytes arr')
+
+unboxInt :: Int -> Int#
+unboxInt (I# i) = i
+
+boxBytes :: Bytes# -> Bytes
+boxBytes (# a, b, c #) = Bytes (ByteArray a) (I# b) (I# c)
+
+withBytePtr ::
+     PM.MutableByteArray RealWorld
+  -> (PM.Addr -> IO b)
+  -> IO b
+withBytePtr marr@(PM.MutableByteArray marr#) f =
+  case isMutableByteArrayPinned# marr# of
+    1# -> do
+      let !addr = PM.mutableByteArrayContents marr
+      f addr
+    _ -> FMA.allocaBytes (PM.sizeofMutableByteArray marr) $ \ptr -> do
+      let !addr = ptrToAddr ptr
+      !r <- f addr
+      copyAddrToByteArray addr marr 0 (PM.sizeofMutableByteArray marr)
+      return r
+
+ptrToAddr :: Ptr a -> PM.Addr
+ptrToAddr (Ptr x) = PM.Addr x
+
+addrToPtr :: PM.Addr -> Ptr a
+addrToPtr (PM.Addr x) = Ptr x
+
+copyAddrToByteArray ::
+     PM.Addr
+  -> PM.MutableByteArray RealWorld
+  -> Int
+  -> Int
+  -> IO ()
+copyAddrToByteArray (PM.Addr addr) (PM.MutableByteArray marr) (I# off) (I# len) =
+  IO $ \s0 -> case copyAddrToByteArray# addr marr off len s0 of
+    s1 -> (# s1, () #)
+
+dwindle :: Bytes -> Bytes
+dwindle b@(Bytes _ _ !len) = if len > 0 then b else empty
+  
+dwindle# :: Bytes# -> Bytes# 
+dwindle# b@(# _,_,len #) = case len ># 0# of
+  1# -> b
+  _ -> (# unboxByteArray BA.empty, 0#, 0# #)
+
+unboxByteArray :: ByteArray -> ByteArray#
+unboxByteArray (ByteArray arr) = arr
+

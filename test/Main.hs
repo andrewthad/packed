@@ -52,6 +52,9 @@ tests = testGroup "Tests"
     , testGroup "Table"
       [ testProperty "lookup" byteTableLookupProp
       ]
+    , testGroup "Parser"
+      [ testProperty "decimalWord" byteParserDecimalWord
+      ]
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
