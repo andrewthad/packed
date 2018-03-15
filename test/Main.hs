@@ -58,9 +58,9 @@ tests = testGroup "Tests"
     , testGroup "Stream"
       [ testProperty "append" byteStreamAppendProp
       ]
-    -- , testGroup "Parser"
-    --   [ testProperty "decimalWord" byteParserDecimalWord
-    --   ]
+    , testGroup "Parser"
+      [ testProperty "decimalWord" byteParserDecimalWord
+      ]
     ]
   , testGroup "Text"
     [ testProperty "pack" textPackProp
@@ -204,8 +204,8 @@ byteParserDecimalWord = property $ do
   w <- forAll (word (linear minBound maxBound))
   let stream = foldMap (Stream.singleton . charToWord8) (show w)
   let v = runST $ do
-        Parser.Result Nothing (Just v) <- Parser.parseStreamST stream Parser.decimalWord
-        return v
+        Parser.Result Nothing (Just x) <- Parser.parseStreamST stream Parser.decimalWord
+        return x
   w === v
 
 charToWord8 :: Char -> Word8

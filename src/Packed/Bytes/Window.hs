@@ -33,6 +33,7 @@ module Packed.Bytes.Window
   , isAscii
   , isUtf8
   , findNonAscii'
+  , findNonAsciiSpace'
   ) where
 
 import Data.Primitive (ByteArray(ByteArray))
@@ -345,6 +346,18 @@ findNonAscii' !start !len !arr = findVectorizable
   (\w -> w .&. asciiMask /= 0)
   (\w -> w .&. asciiMachMask /= 0)
   start len arr
+
+findNonAsciiSpace' :: Int -> Int -> ByteArray -> Maybe# Int#
+findNonAsciiSpace' !start !len !arr = go start (start + len) where
+  go :: Int -> Int -> Maybe# Int#
+  go !ix !end = if ix < end
+    then if isAsciiSpace (PM.indexByteArray arr ix)
+      then go (ix + 1) end
+      else (# | unboxInt ix #)
+    else (# (# #) | #)
+
+isAsciiSpace :: Word8 -> Bool
+isAsciiSpace w = w == 32 || w - 9 <= 4
 
 -- | The meaning of the result sum elements in order:
 --

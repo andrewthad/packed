@@ -29,7 +29,8 @@ import qualified Packed.Bytes as B
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
 
-newtype ByteStream s = ByteStream (State# s -> (# State# s, (# (# #) | (# Bytes# , ByteStream s #) #) #) )
+newtype ByteStream s = ByteStream
+  (State# s -> (# State# s, (# (# #) | (# Bytes# , ByteStream s #) #) #) )
 
 instance Semigroup (ByteStream s) where
   (<>) = append

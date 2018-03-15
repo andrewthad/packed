@@ -21,6 +21,7 @@ module Packed.Bytes.Parser
   , Leftovers(..)
   , parseStreamST
   , decimalWord
+  , skipSpace
   ) where
 
 import GHC.Int (Int(I#))
@@ -34,10 +35,11 @@ import Data.Word (Word8)
 import Packed.Bytes.Stream (ByteStream(..))
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Window as BAW
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
 type Maybe# (a :: TYPE r) = (# (# #) | a #)
-type Leftovers# s = (# ByteStream s, Bytes# #)
+type Leftovers# s = (# Bytes# , ByteStream s #)
 type Result# s (r :: RuntimeRep) (a :: TYPE r) =
   (# Maybe# (Leftovers# s), Maybe# a #)
 
@@ -55,19 +57,19 @@ data Leftovers s = Leftovers
 
 parseStreamST :: ByteStream s -> Parser a -> ST s (Result s a)
 parseStreamST stream (Parser (ParserLevity f)) = ST $ \s0 ->
-  case f (# | (# stream, (# unboxByteArray BA.empty, 0#, 0# #) #) #) s0 of
+  case f (# | (# (# unboxByteArray BA.empty, 0#, 0# #), stream #) #) s0 of
     (# s1, r #) -> (# s1, boxResult r #)
 
-boxResult :: Result# s LiftedRep a -> Result s a
+boxResult :: Result# s 'LiftedRep a -> Result s a
 boxResult (# leftovers, val #) = case val of
   (# (# #) | #) -> Result (boxLeftovers leftovers) Nothing
   (# | a #) -> Result (boxLeftovers leftovers) (Just a)
 
 boxLeftovers :: Maybe# (Leftovers# s) -> Maybe (Leftovers s)
 boxLeftovers (# (# #) | #) = Nothing
-boxLeftovers (# | (# stream, bytes #) #) = Just (Leftovers (boxBytes bytes) stream)
+boxLeftovers (# | (# bytes, stream #) #) = Just (Leftovers (boxBytes bytes) stream)
 
-newtype Parser a = Parser (ParserLevity LiftedRep a)
+newtype Parser a = Parser (ParserLevity 'LiftedRep a)
 
 newtype ParserLevity (r :: RuntimeRep) (a :: TYPE r) = ParserLevity
   { getParserLevity :: forall s.
@@ -94,55 +96,75 @@ nextNonEmpty (ByteStream f) s0 = case f s0 of
     (# (# #) | #) -> (# s1, (# (# #) | #) #)
     (# | (# bytes@(# _,_,len #), stream #) #) -> case len of
       0# -> nextNonEmpty stream s1
-      _ -> (# s1, (# | (# stream, bytes #) #) #)
+      _ -> (# s1, (# | (# bytes, stream #) #) #)
 
-decimalDigit :: ParserLevity WordRep Word#
+decimalDigit :: ParserLevity 'WordRep Word#
 decimalDigit = ParserLevity $ \leftovers0 s0 -> case leftovers0 of
   (# (# #) | #) -> (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
-  (# | (# stream0, bytes0@(# _,_,len #) #) #) ->
+  (# | (# bytes0@(# _,_,len #), stream0 #) #) ->
     let !(# s1, r #) = case len of
           0# -> nextNonEmpty stream0 s0
-          _ -> (# s0, (# | (# stream0, bytes0 #) #) #)
+          _ -> (# s0, (# | (# bytes0, stream0 #) #) #)
      in case r of
           (# (# #) | #) -> (# s1, (# (# (# #) | #), (# (# #) | #) #) #)
-          (# | (# stream1, bytes1 #) #) ->
+          (# | (# bytes1, stream1 #) #) ->
             let !w = word8ToWord (bytesIndex bytes1 0) - 48
              in if w < 10
-                  then (# s1, (# (# | (# stream1, unsafeDrop# 1 bytes1 #) #), (# | unboxWord w #) #) #)
-                  else (# s1, (# (# | (# stream1, bytes1 #) #), (# (# #) | #) #) #)
+                  then (# s1, (# (# | (# unsafeDrop# 1 bytes1, stream1 #) #), (# | unboxWord w #) #) #)
+                  else (# s1, (# (# | (# bytes1, stream1 #) #), (# (# #) | #) #) #)
 
-decimalContinue :: Word# -> ParserLevity WordRep Word#
+decimalContinue :: Word# -> ParserLevity 'WordRep Word#
 decimalContinue theWord = ParserLevity (action theWord) where
-  action :: Word# -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s WordRep Word# #)
+  action :: Word# -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'WordRep Word# #)
   action !w0 (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# | w0 #) #) #)
   action !w0 (# | leftovers0 #) s0 = go w0 leftovers0 s0
-  go :: Word# -> Leftovers# s -> State# s -> (# State# s, Result# s WordRep Word# #)
-  go !w0 leftovers0@(# !stream0, !bytes0@(# _,_,len #) #) s0 = 
+  go :: Word# -> Leftovers# s -> State# s -> (# State# s, Result# s 'WordRep Word# #)
+  go !w0 leftovers0@(# (# _,_,len #), !stream0 #) s0 = 
     let !(# s1, leftovers1 #) = case len of
           0# -> nextNonEmpty stream0 s0
           _ -> (# s0, (# | leftovers0 #) #)
      in case leftovers1 of
           (# (# #) | #) -> (# s1, (# (# (# #) | #), (# | w0 #) #) #)
-          (# | (# stream1, bytes1 #) #) ->
+          (# | (# bytes1, stream1 #) #) ->
             let !w = word8ToWord (bytesIndex bytes1 0) - 48
              in if w < 10
-                  then go (plusWord# (timesWord# w0 10##) (unboxWord w)) (# stream1, bytes1 #) s1
-                  else (# s1, (# (# | (# stream1, bytes1 #) #), (# | w0 #) #) #)
-         
-decimalWordUnboxed :: ParserLevity WordRep Word#
+                  then go (plusWord# (timesWord# w0 10##) (unboxWord w)) (# unsafeDrop# 1 bytes1, stream1 #) s1
+                  else (# s1, (# (# | (# bytes1, stream1 #) #), (# | w0 #) #) #)
+
+decimalWordUnboxed :: ParserLevity 'WordRep Word#
 decimalWordUnboxed = bindWord decimalDigit decimalContinue
+
+skipSpaceUnboxed :: ParserLevity 'LiftedRep ()
+skipSpaceUnboxed = ParserLevity action where
+  action :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  action (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# | () #) #) #)
+  action (# | leftovers0 #) s0 = go leftovers0 s0
+  go :: Leftovers# s -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) s0 = case BAW.findNonAsciiSpace' (I# off) (I# len) (ByteArray arr) of
+    (# (# #) | #) -> case streamFunc s0 of
+      (# s1, r #) -> case r of
+        (# (# #) | #) -> (# s1, (# (# (# #) | #), (# | () #) #) #)
+        (# | leftovers1 #) -> go leftovers1 s1
+    (# | ix #) -> (# s0, (# (# | (# unsafeDrop# (I# (ix -# off)) bytes0, stream0 #) #), (# | () #) #) #)
+
+-- takeWhileMember :: ParserLevity 'LiftedRep Bytes
+-- takeWhileMember = ParserLevity action where
+  
+
+skipSpace :: Parser ()
+skipSpace = Parser skipSpaceUnboxed
 
 decimalWord :: Parser Word
 decimalWord = Parser (boxWordParser decimalWordUnboxed)
 
-bindWord :: ParserLevity WordRep Word# -> (Word# -> ParserLevity WordRep Word#) -> ParserLevity WordRep Word#
+bindWord :: ParserLevity 'WordRep Word# -> (Word# -> ParserLevity 'WordRep Word#) -> ParserLevity 'WordRep Word#
 bindWord (ParserLevity f) g = ParserLevity $ \leftovers0 s0 -> case f leftovers0 s0 of
   (# s1, (# leftovers1, val #) #) -> case val of
     (# (# #) | #) -> (# s1, (# leftovers1, (# (# #) | #) #) #)
     (# | x #) -> case g x of
       ParserLevity k -> k leftovers1 s1
 
-boxWordParser :: ParserLevity WordRep Word# -> ParserLevity LiftedRep Word
+boxWordParser :: ParserLevity 'WordRep Word# -> ParserLevity 'LiftedRep Word
 boxWordParser p = ParserLevity $ \leftovers0 s0 ->
   case getParserLevity p leftovers0 s0 of
     (# s1, (# leftovers1, val #) #) -> case val of
