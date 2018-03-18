@@ -14,6 +14,7 @@ module Packed.Bytes
   ( Bytes(..)
   , empty
   , singleton
+  , append
   , pack
   , unpack
   , null
@@ -45,6 +46,7 @@ import GHC.Exts (RealWorld,State#,Int#,MutableByteArray#,Addr#,ByteArray#,
 import GHC.Int (Int(I#))
 import GHC.IO (IO(..))
 import System.IO (Handle)
+import Control.Monad.ST (runST)
 import qualified Foreign.Marshal.Alloc as FMA
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes.Small as BA
@@ -66,6 +68,14 @@ instance Eq Bytes where
 
 instance Show Bytes where
   show x = "pack " ++ show (unpack x)
+
+append :: Bytes -> Bytes -> Bytes
+append (Bytes arr1 off1 len1) (Bytes arr2 off2 len2) = runST $ do
+  marr <- PM.newByteArray (len1 + len2)
+  PM.copyByteArray marr 0 arr1 off1 len1
+  PM.copyByteArray marr len1 arr2 off2 len2
+  arr <- PM.unsafeFreezeByteArray marr
+  return (Bytes arr 0 (len1 + len2))
 
 null :: Bytes -> Bool
 null (Bytes _ _ len) = len < 1

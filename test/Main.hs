@@ -26,6 +26,8 @@ import GHC.Int (Int(I#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR)
 import Control.Monad (forM_)
 import Control.Monad.ST (ST,runST)
+import Packed.Bytes.Parser (Parser)
+import Packed.Bytes.Set (ByteSet)
 
 import qualified Data.Char
 import qualified Test.Tasty.Hedgehog as H
@@ -36,8 +38,10 @@ import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes as B
 import qualified Data.Set as S
 import qualified GHC.OldList as L
+import qualified Data.List.Split as LS
 import qualified Packed.Bytes.Stream as Stream
 import qualified Packed.Bytes.Parser as Parser
+import qualified Packed.Bytes.Set as ByteSet
 
 main :: IO ()
 main = defaultMain tests
@@ -60,6 +64,7 @@ tests = testGroup "Tests"
       ]
     , testGroup "Parser"
       [ testProperty "decimalWord" byteParserDecimalWord
+      , testProperty "Artificial" byteParserArtifical
       ]
     ]
   , testGroup "Text"
@@ -208,8 +213,53 @@ byteParserDecimalWord = property $ do
         return x
   w === v
 
+data Artificial = Artificial
+  { artificialNumber :: !Word
+  , artificialLetter :: !Char
+  } deriving (Eq,Show)
+
+byteParserArtifical :: Property
+byteParserArtifical = property $ do
+  let sample = "With 524, 0xFABAC1D9   choice C is the answer."
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runST $ do
+        Parser.Result mleftovers r <- Parser.parseStreamST stream parserArtificial
+        mextra <- case mleftovers of
+          Nothing -> return Nothing
+          Just (Parser.Leftovers chunk remainingStream) -> do
+            bs <- Stream.unpackST remainingStream
+            return (Just (map word8ToChar (B.unpack chunk ++ bs)))
+        return (r,mextra)
+  Nothing === mextra
+  Just (Artificial 524 'C') === r
+
+parserArtificial :: Parser Artificial
+parserArtificial = do
+  Parser.bytes (B.pack (map charToWord8 "With "))
+  n <- Parser.decimalWord
+  Parser.byte (charToWord8 ',')
+  Parser.skipSpace
+  Parser.byte (charToWord8 '0')
+  Parser.byte (charToWord8 'x')
+  _ <- Parser.takeBytesWhileMember hexSet
+  Parser.skipSpace
+  Parser.bytes (B.pack (map charToWord8 "choice "))
+  c <- Parser.any
+  Parser.bytes (B.pack (map charToWord8 " is the answer."))
+  Parser.endOfInput
+  return (Artificial n (word8ToChar c))
+
+hexSet :: ByteSet
+hexSet = ByteSet.fromList (map charToWord8 (concat [['a'..'f'],['A'..'F'],['0'..'9']]))
+
 charToWord8 :: Char -> Word8
 charToWord8 = fromIntegral . Data.Char.ord
+
+word8ToChar :: Word8 -> Char
+word8ToChar = Data.Char.chr . fromIntegral
 
 listDropEnd :: Int -> [a] -> [a]
 listDropEnd n xs = L.take (L.length xs - n) xs
@@ -293,7 +343,7 @@ genMostlyAsciiBytes = choice
 
 findByteProp :: Property
 findByteProp = property $ do
-  wordList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
+  wordList :: [Word8] <- forAll (list (linear 1 128) enumBounded)
   let len = L.length wordList
   mindex <- forAll $ frequency
     [ (4, fmap Just (int (linear 0 (len - 1))))

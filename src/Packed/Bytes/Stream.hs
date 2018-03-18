@@ -11,6 +11,7 @@ module Packed.Bytes.Stream
   , singleton
   , unpack
   , unpackST
+  , fromBytes
   , fromHandle
   ) where
 
@@ -42,6 +43,10 @@ instance Monoid (ByteStream s) where
 singleton :: Word8 -> ByteStream s
 singleton w = ByteStream
   (\s0 -> (# s0, (# | (# unboxBytes (B.singleton w), empty #) #) #))
+  
+fromBytes :: Bytes -> ByteStream s
+fromBytes b = ByteStream
+  (\s0 -> (# s0, (# | (# unboxBytes b, empty #) #) #))
   
 append :: ByteStream s -> ByteStream s -> ByteStream s
 append (ByteStream f) x@(ByteStream g) = ByteStream $ \s0 -> case f s0 of

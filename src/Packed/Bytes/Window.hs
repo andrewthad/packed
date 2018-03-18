@@ -24,6 +24,9 @@ module Packed.Bytes.Window
   , zipOr
   , zipXor
   , equality
+  , findMemberByte
+  , findNonMemberByte
+  , stripPrefixResumable
     -- * Hashing
   , hash
   , hashWith
@@ -45,7 +48,9 @@ import GHC.Exts (Int#,Word#,ByteArray#,byteSwap#,word2Int#,(+#),int2Word#)
 import Data.Bits (xor,(.|.),(.&.),complement,unsafeShiftL,finiteBitSize,
   unsafeShiftR,countLeadingZeros)
 import Control.Monad.ST (ST,runST)
+import Packed.Bytes.Set (ByteSet)
 import qualified Data.Primitive as PM
+import qualified Packed.Bytes.Set as ByteSet
 
 type Maybe# (a :: TYPE (r :: RuntimeRep)) = (# (# #) | a #)
 
@@ -115,6 +120,48 @@ findByte' !off# !len0# !w0# !arr0# =
         (ix * PM.sizeOf (undefined :: Word)) 
         ((ix + 1) * PM.sizeOf (undefined :: Word))
     else (# (# #) | #)
+
+-- | Search for the 'ByteArray' for any member byte. Returns 'Nothing' if nothing
+--   from the 'ByteSet' is found. Returns 'Just' with both the index of the byte
+--   and the byte itself if a matching byte is found.
+findMemberByte :: Int -> Int -> ByteSet -> ByteArray -> Maybe (Int,Word8)
+findMemberByte !(I# off) !(I# len) !(ByteSet.ByteSet (ByteArray set)) !(ByteArray arr) =
+  case findMemberByte' off len set arr of
+    (# (# #) | #) -> Nothing
+    (# | (# i, w #) #) -> Just (I# i, W8# w)
+
+findNonMemberByte :: Int -> Int -> ByteSet -> ByteArray -> Maybe (Int,Word8)
+findNonMemberByte !(I# off) !(I# len) !(ByteSet.ByteSet (ByteArray set)) !(ByteArray arr) =
+  case findNonMemberByte' off len set arr of
+    (# (# #) | #) -> Nothing
+    (# | (# i, w #) #) -> Just (I# i, W8# w)
+
+{-# NOINLINE findMemberByte' #-}
+findMemberByte' :: Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
+findMemberByte' off# len# set# arr# = findTemplateMemberByte' id off# len# set# arr#
+
+{-# NOINLINE findNonMemberByte' #-}
+findNonMemberByte' :: Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
+findNonMemberByte' off# len# set# arr# = findTemplateMemberByte' not off# len# set# arr#
+
+{-# INLINE findTemplateMemberByte' #-}
+findTemplateMemberByte' :: (Bool -> Bool) -> Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
+findTemplateMemberByte' tweak off# len# set# arr# = go off
+  where
+  !off = I# off#
+  !len = I# len#
+  !end = off + len
+  !set = ByteSet.ByteSet (ByteArray set#)
+  !arr = ByteArray arr#
+  go :: Int -> Maybe# (# Int# , Word# #)
+  go !ix = if ix < end
+    then 
+      let !w@(W8# w#) = unsafeIndex arr ix
+       in if tweak (ByteSet.member w set)
+            then (# | (# unboxInt ix, w# #) #)
+            else go (ix + 1)
+    else (# (# #) | #)
+
 
 -- cast a Word8 index to a machine Word index, rounding up
 alignUp :: Int -> Int
@@ -566,7 +613,7 @@ hashWith ::
   -> Int
 hashWith !off !len (I# salt) !buckets !arr =
   divBase2DivisorBackwards
-    (hashFinalize (hashContinuation off len (# salt, 0#, 0#, 0## #) arr))
+    (hashFinalize (hashResumable off len (# salt, 0#, 0#, 0## #) arr))
     buckets
 
 hashFinalize ::
@@ -579,48 +626,48 @@ hashFinalize (# !pos, !needed, !h, !w #) = -- error ("leftover artifact: " ++ sh
   -- (I# h) + ((((I# pos) * bytesInWord + I# needed) + (I# (word2Int# w))) * indexEntropy (I# pos))
   -- I# h + I# needed + I# pos + I# (word2Int# w)
 
-hashContinuation ::
+hashResumable ::
      Int -- ^ offset
   -> Int -- ^ length
   -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
   -> ByteArray -- ^ bytes
   -> (# Int#, Int#, Int#, Word# #)
-hashContinuation !off !len !leftovers !arr = case isBigEndian of
-  True -> hashContinuationBigEndian off len leftovers arr
-  False -> hashContinuationLittleEndian off len leftovers arr
+hashResumable !off !len !leftovers !arr = case isBigEndian of
+  True -> hashResumableBigEndian off len leftovers arr
+  False -> hashResumableLittleEndian off len leftovers arr
 
-hashContinuationBigEndian ::
+hashResumableBigEndian ::
      Int -- ^ offset
   -> Int -- ^ length
   -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
   -> ByteArray -- ^ bytes
   -> (# Int#, Int#, Int#, Word# #)
-hashContinuationBigEndian !off !len !leftovers !arr =
-  hashContinuationInternal off len unsafeIndexWord leftovers arr
+hashResumableBigEndian !off !len !leftovers !arr =
+  hashResumableInternal off len unsafeIndexWord leftovers arr
 
-hashContinuationLittleEndian ::
+hashResumableLittleEndian ::
      Int -- ^ offset
   -> Int -- ^ length
   -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
   -> ByteArray -- ^ bytes
   -> (# Int#, Int#, Int#, Word# #)
-hashContinuationLittleEndian !off !len !leftovers !arr =
-  hashContinuationInternal off len unsafeIndexWordLE leftovers arr
+hashResumableLittleEndian !off !len !leftovers !arr =
+  hashResumableInternal off len unsafeIndexWordLE leftovers arr
 
 unsafeIndexWordLE :: ByteArray -> Int -> Word
 unsafeIndexWordLE arr ix = 
   let !(W# w) = unsafeIndexWord arr ix
    in W# (byteSwap# w)
 
-{-# INLINE hashContinuationInternal #-}
-hashContinuationInternal ::
+{-# INLINE hashResumableInternal #-}
+hashResumableInternal ::
      Int -- ^ offset
   -> Int -- ^ length
   -> (ByteArray -> Int -> Word) -- ^ big endian index into bytearray
   -> (# Int#, Int#, Int#, Word# #) -- ^ leftovers
   -> ByteArray -- ^ bytes
   -> (# Int#, Int#, Int#, Word# #)
-hashContinuationInternal !off !len0 normalizedIndexWord (# pos0# ,needed0#, acc0#, artifact0# #) !arr
+hashResumableInternal !off !len0 normalizedIndexWord (# pos0# ,needed0#, acc0#, artifact0# #) !arr
   -- Note that pos refers to the number of bytes processed so far,
   -- while ix and off refer to a position in the current chunk. The value
   -- of needed is bounded by [0,WORD_SIZE)
@@ -826,8 +873,30 @@ equals ::
   -> ByteArray -- array one
   -> ByteArray -- array two
   -> Bool
-equals off1 off2 len arr1 arr2 = if len > 0
+equals !off1 !off2 !len !arr1 !arr2 = if len > 0
   then unsafeIndex arr1 off1 == unsafeIndex arr2 off2
     && equals (off1 + 1) (off2 + 1) (len - 1) arr1 arr2
   else True
+
+-- | The returned sum has three options:
+--
+--   * Did not match.
+--   * Did match.
+--   * Out of input.
+stripPrefixResumable ::
+     Int -- ^ prefix offset
+  -> Int -- ^ offset
+  -> Int -- ^ prefix length
+  -> Int -- ^ length
+  -> ByteArray -- ^ prefix array
+  -> ByteArray -- ^ array
+  -> (# (# #) | (# #) | (# #) #)
+stripPrefixResumable !poff !off !plen !len !parr !arr = if plen > len
+  then case equals poff off len parr arr of
+    True -> (# | | (# #) #)
+    False -> (# (# #) | | #)
+  else case equals poff off plen parr arr of
+    True -> (# | (# #) | #)
+    False -> (# (# #) | | #)
+
 
