@@ -41,7 +41,6 @@ import qualified Data.Primitive.SmallArray as PMSA
 --   guaranteed O(1) worst-case cost. It consumes linear space. This
 --   is an excellent candidate for use with compact regions.
 newtype BytesTable v = BytesTable (SmallArray (Cell v))
-  deriving (Show)
 -- invariant for BytesTable: the Array must have a length
 -- that is a power of two.
 
@@ -53,14 +52,12 @@ data Cell v
   | CellMany
       {-# UNPACK #-} !Int -- hash salt
       {-# UNPACK #-} !(SmallArray (Info v)) -- length must be power of two
-  deriving (Show)
 
 data Info v
   = InfoAbsent
   | InfoPresent
       {-# UNPACK #-} !ByteArray --payload
       !v
-  deriving (Show)
 
 -- data ByteArrayArray = ByteArrayArray ArrayArray#
 
