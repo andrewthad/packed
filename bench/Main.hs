@@ -1,28 +1,36 @@
 {-# OPTIONS_GHC -O2 -Wall #-}
 
+import Control.Monad.ST (runST)
+import Data.ByteString (ByteString)
+import Data.Char (ord,toUpper)
+import Data.Foldable (foldl',toList)
+import Data.HashMap.Strict (HashMap)
+import Data.Maybe (isJust)
+import Data.Primitive (Array)
+import Data.Word (Word8)
+import GHC.Exts (fromList)
 import Gauge (bgroup,bench,whnf)
 import Gauge.Main (defaultMain)
-import Packed.Bytes.Small (ByteArray)
-import Packed.Text (Text)
 import Packed.Bytes (Bytes)
+import Packed.Bytes.Small (ByteArray)
 import Packed.Bytes.Table (BytesTable)
-import Data.Primitive (Array)
-import Data.HashMap.Strict (HashMap)
-import Data.ByteString (ByteString)
-import Data.Foldable (foldl',toList)
-import Data.Maybe (isJust)
-import Data.Char (ord,toUpper)
-import GHC.Exts (fromList)
+import Packed.Text (Text)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.HashMap.Strict as HM
+import qualified Data.List.Split as LS
 import qualified Packed.Bytes as B
 import qualified Data.Hashable as H
 import qualified GHC.OldList as L
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Table as BT
+import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Parser as Parser
 import qualified Packed.Text as T
+
+-- from common directory
+import qualified Parser.Http.Request as Request
 
 main :: IO ()
 main = do
@@ -44,6 +52,14 @@ main = do
         [ bench "packed" $ whnf packedLookupAll packedBytesTable
         , bench "platform" $ whnf platformLookupAll platformBytesTable
         ]
+      , bgroup "Parser"
+        [ bgroup "http-request"
+          [ bench "unchunked" $ whnf decodeHttpRequest httpReqUnchunked
+          , bench "chunk-100" $ whnf decodeHttpRequest httpReqChunk100
+          , bench "chunk-10" $ whnf decodeHttpRequest httpReqChunk10
+          , bench "chunk-4" $ whnf decodeHttpRequest httpReqChunk4
+          ]
+        ]
       ]
     , bgroup "Text"
       [ bgroup "toUpper"
@@ -60,6 +76,8 @@ main = do
         ]
       ]
     ]
+
+data StrictMaybe a = StrictJust !a | StrictNothing
 
 byteArrayA :: ByteArray
 byteArrayA = BA.pack $ L.concat
@@ -339,3 +357,39 @@ longEnglishWords = do
     , "foolishnesses"
     , "foppishnesses"
     ]
+
+httpReqChunk4 :: Array Bytes
+httpReqChunk4 = fromList
+  $ map (B.pack . map c2w)
+  $ LS.chunksOf 4
+  $ Request.sample
+
+httpReqChunk10 :: Array Bytes
+httpReqChunk10 = fromList
+  $ map (B.pack . map c2w)
+  $ LS.chunksOf 10
+  $ Request.sample
+
+httpReqChunk100 :: Array Bytes
+httpReqChunk100 = fromList
+  $ map (B.pack . map c2w)
+  $ LS.chunksOf 100
+  $ Request.sample
+
+httpReqUnchunked :: Array Bytes
+httpReqUnchunked = pure
+  $ B.pack
+  $ map c2w
+  $ Request.sample
+
+decodeHttpRequest :: Array Bytes -> StrictMaybe Request.Request
+decodeHttpRequest arrBytes = runST $ do
+  Parser.Result _ r <- Parser.parseStreamST (Stream.fromArray arrBytes) Request.parser
+  return $ case r of
+    Nothing -> StrictNothing
+    Just a -> StrictJust a
+  
+
+c2w :: Char -> Word8
+c2w = fromIntegral . Data.Char.ord
+

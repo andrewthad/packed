@@ -1,6 +1,16 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
+{-# OPTIONS_GHC
+ -Weverything
+ -fno-warn-unsafe
+ -fno-warn-implicit-prelude
+ -fno-warn-missing-import-lists
+ -O2
+#-}
+
+
 module Packed.Bytes.Set
   ( ByteSet(..)
   , member

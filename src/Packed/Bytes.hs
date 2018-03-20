@@ -14,6 +14,7 @@ module Packed.Bytes
   ( Bytes(..)
   , empty
   , singleton
+  , cons
   , append
   , pack
   , unpack
@@ -68,6 +69,14 @@ instance Eq Bytes where
 
 instance Show Bytes where
   show x = "pack " ++ show (unpack x)
+
+cons :: Word8 -> Bytes -> Bytes
+cons w (Bytes arr off len) = runST $ do
+  marr <- PM.newByteArray (len + 1)
+  PM.writeByteArray marr 0 w
+  PM.copyByteArray marr 1 arr off len
+  newArr <- PM.unsafeFreezeByteArray marr
+  return (Bytes newArr 0 (len + 1))
 
 append :: Bytes -> Bytes -> Bytes
 append (Bytes arr1 off1 len1) (Bytes arr2 off2 len2) = runST $ do

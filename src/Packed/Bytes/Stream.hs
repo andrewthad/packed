@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UnboxedTuples #-}
@@ -12,18 +13,20 @@ module Packed.Bytes.Stream
   , unpack
   , unpackST
   , fromBytes
+  , fromArray
   , fromHandle
   ) where
 
+import Data.Primitive (Array)
 import Data.Semigroup (Semigroup)
 import Data.Word (Word8)
 import GHC.Exts (RealWorld,State#,Int#,ByteArray#)
 import GHC.IO (IO(..))
 import GHC.Int (Int(I#))
+import GHC.ST (ST(..))
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Small (ByteArray(..))
 import System.IO (Handle)
-import GHC.ST (ST(..))
 import qualified Data.Primitive as PM
 import qualified Data.Semigroup as SG
 import qualified Packed.Bytes as B
@@ -41,12 +44,22 @@ instance Monoid (ByteStream s) where
   mappend = (SG.<>)
 
 singleton :: Word8 -> ByteStream s
-singleton w = ByteStream
+singleton !w = ByteStream
   (\s0 -> (# s0, (# | (# unboxBytes (B.singleton w), empty #) #) #))
   
 fromBytes :: Bytes -> ByteStream s
 fromBytes b = ByteStream
   (\s0 -> (# s0, (# | (# unboxBytes b, empty #) #) #))
+
+fromArray :: forall s. Array Bytes -> ByteStream s
+fromArray xs = ByteStream (go 0) where
+  !len = PM.sizeofArray xs
+  go :: Int -> State# s -> (# State# s, (# (# #) | (# Bytes# , ByteStream s #) #) #)
+  go !ix s0 = if ix < len
+    then
+      let !x = unboxBytes (PM.indexArray xs ix)
+       in (# s0, (# | (# x, ByteStream (go (ix + 1)) #) #) #)
+    else (# s0, (# (# #) | #) #)
   
 append :: ByteStream s -> ByteStream s -> ByteStream s
 append (ByteStream f) x@(ByteStream g) = ByteStream $ \s0 -> case f s0 of

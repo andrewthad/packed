@@ -1,47 +1,53 @@
-{-# LANGUAGE BinaryLiterals #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BinaryLiterals #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE UnboxedSums #-}
 {-# LANGUAGE UnboxedTuples #-}
-{-# LANGUAGE MagicHash #-}
 
+import Control.Monad (forM_)
+import Control.Monad.ST (ST,runST)
+import Data.Bifunctor (bimap)
+import Data.Bits ((.&.))
+import Data.Bits ((.&.),(.|.),unsafeShiftR)
+import Data.Char (chr)
+import Data.Monoid
+import Data.Primitive (Array)
 import Data.Set (Set)
 import Data.Word (Word8)
+import GHC.Exts (Int#,fromList)
+import GHC.Int (Int(I#))
+import GHC.Types
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
 import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
 import Hedgehog.Range (Range,linear)
-import Test.Tasty (defaultMain,testGroup,TestTree)
-import Data.Bits ((.&.))
-import Data.Char (chr)
-import Test.Tasty.HUnit (testCase)
-import Test.Tasty.Hedgehog (testProperty)
-import Data.Bifunctor (bimap)
-import Data.Monoid
-import GHC.Exts (Int#)
-import GHC.Types
 import Packed.Bytes (Bytes)
-import Packed.Bytes.Small (ByteArray)
-import GHC.Int (Int(I#))
-import Data.Bits ((.&.),(.|.),unsafeShiftR)
-import Control.Monad (forM_)
-import Control.Monad.ST (ST,runST)
 import Packed.Bytes.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
+import Packed.Bytes.Small (ByteArray)
+import Packed.Bytes.Stream (ByteStream)
+import Test.Tasty (defaultMain,testGroup,TestTree)
+import Test.Tasty.HUnit (testCase)
+import Test.Tasty.Hedgehog (testProperty)
 
 import qualified Data.Char
-import qualified Test.Tasty.Hedgehog as H
-import qualified Packed.Text as T
-import qualified Packed.Bytes.Small as BA
-import qualified Packed.Bytes.Window as BAW
-import qualified Packed.Bytes.Table as BT
-import qualified Packed.Bytes as B
+import qualified Data.List.Split as LS
 import qualified Data.Set as S
 import qualified GHC.OldList as L
-import qualified Data.List.Split as LS
-import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Parser as Parser
 import qualified Packed.Bytes.Set as ByteSet
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Table as BT
+import qualified Packed.Bytes.Window as BAW
+import qualified Packed.Text as T
+import qualified Test.Tasty.Hedgehog as H
+
+-- from common directory
+import qualified Parser.Http.Request as Request
 
 main :: IO ()
 main = defaultMain tests
@@ -64,7 +70,15 @@ tests = testGroup "Tests"
       ]
     , testGroup "Parser"
       [ testProperty "decimalWord" byteParserDecimalWord
-      , testProperty "Artificial" byteParserArtifical
+      , testGroup "takeBytesUntilEndOfLineConsume"
+        [ testProperty "accept" byteParserEolAccept
+        , testProperty "reject" byteParserEolReject
+        ]
+      , testGroup "Artificial"
+        [ testProperty "alpha" byteParserArtificalA
+        , testProperty "beta" byteParserArtificalB
+        , testProperty "http-request" byteParserHttpRequest
+        ]
       ]
     ]
   , testGroup "Text"
@@ -213,31 +227,34 @@ byteParserDecimalWord = property $ do
         return x
   w === v
 
-data Artificial = Artificial
-  { artificialNumber :: !Word
-  , artificialLetter :: !Char
+runExampleParser :: Parser a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runExampleParser parser stream = runST $ do
+  Parser.Result mleftovers r <- Parser.parseStreamST stream parser
+  mextra <- case mleftovers of
+    Nothing -> return Nothing
+    Just (Parser.Leftovers chunk remainingStream) -> do
+      bs <- Stream.unpackST remainingStream
+      return (Just (map word8ToChar (B.unpack chunk ++ bs)))
+  return (r,mextra)
+
+data ArtificialAlpha = ArtificialAlpha
+  { artificialAlphaNumber :: !Word
+  , artificialAlphaLetter :: !Char
   } deriving (Eq,Show)
 
-byteParserArtifical :: Property
-byteParserArtifical = property $ do
+byteParserArtificalA :: Property
+byteParserArtificalA = property $ do
   let sample = "With 524, 0xFABAC1D9   choice C is the answer."
   elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
   let strChunks = LS.chunksOf elementsPerChunk sample
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
-      (r,mextra) = runST $ do
-        Parser.Result mleftovers r <- Parser.parseStreamST stream parserArtificial
-        mextra <- case mleftovers of
-          Nothing -> return Nothing
-          Just (Parser.Leftovers chunk remainingStream) -> do
-            bs <- Stream.unpackST remainingStream
-            return (Just (map word8ToChar (B.unpack chunk ++ bs)))
-        return (r,mextra)
+      (r,mextra) = runExampleParser parserArtificialA stream
   Nothing === mextra
-  Just (Artificial 524 'C') === r
+  Just (ArtificialAlpha 524 'C') === r
 
-parserArtificial :: Parser Artificial
-parserArtificial = do
+parserArtificialA :: Parser ArtificialAlpha
+parserArtificialA = do
   Parser.bytes (B.pack (map charToWord8 "With "))
   n <- Parser.decimalWord
   Parser.byte (charToWord8 ',')
@@ -250,16 +267,93 @@ parserArtificial = do
   c <- Parser.any
   Parser.bytes (B.pack (map charToWord8 " is the answer."))
   Parser.endOfInput
-  return (Artificial n (word8ToChar c))
+  return (ArtificialAlpha n (word8ToChar c))
+
+data ArtificialBeta = ArtificialBeta
+  { artificialBetaName :: !Bytes
+  , artificialBetaAttributes :: !(Array Bytes)
+  } deriving (Eq,Show)
+
+byteParserArtificalB :: Property
+byteParserArtificalB = property $ do
+  let sample = "Name: Drew. Attributes: 3 (fire,water,ice,)."
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser parserArtificialB stream
+      expected = fromList [s2b "fire", s2b "water", s2b "ice"]
+  Nothing === mextra
+  Just (ArtificialBeta (s2b "Drew") expected) === r
+
+parserArtificialB :: Parser ArtificialBeta
+parserArtificialB = do
+  Parser.bytes (s2b "Name: ")
+  name <- Parser.takeBytesUntilByteConsume (c2w '.')
+  Parser.bytes (s2b " Attributes: ")
+  attrCount <- Parser.decimalWord
+  Parser.bytes (s2b " (")
+  attrs <- Parser.replicate (wordToInt attrCount) (Parser.takeBytesUntilByteConsume (c2w ','))
+  Parser.bytes (s2b ").")
+  Parser.endOfInput
+  return (ArtificialBeta name attrs)
+
+byteParserEolAccept :: Property
+byteParserEolAccept = property $ do
+  let sample = "age\nof\r\nthe\ngreatest\r\nmusic\n\r\ntoday\n"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser
+        (Parser.replicateUntilEnd Parser.takeBytesUntilEndOfLineConsume)
+        stream
+      expected = fromList
+        [ s2b "age", s2b "of", s2b "the", s2b "greatest"
+        , s2b "music", s2b "", s2b "today"
+        ] :: Array Bytes
+  Nothing === mextra
+  Just expected === r
+
+byteParserEolReject :: Property
+byteParserEolReject = property $ do
+  let sample = "the\nemporium\rhas\narrived"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser
+        (Parser.replicateUntilEnd Parser.takeBytesUntilEndOfLineConsume)
+        stream
+  Just "\rhas\narrived" === mextra
+
+byteParserHttpRequest :: Property
+byteParserHttpRequest = property $ do
+  elementsPerChunk <- forAll $ int (linear 1 (L.length Request.sample))
+  let strChunks = LS.chunksOf elementsPerChunk Request.sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser Request.parser stream
+  Nothing === mextra
+  Just Request.expected === r
+
+s2b :: String -> Bytes
+s2b = B.pack . map charToWord8
 
 hexSet :: ByteSet
 hexSet = ByteSet.fromList (map charToWord8 (concat [['a'..'f'],['A'..'F'],['0'..'9']]))
+
+c2w :: Char -> Word8
+c2w = charToWord8
 
 charToWord8 :: Char -> Word8
 charToWord8 = fromIntegral . Data.Char.ord
 
 word8ToChar :: Word8 -> Char
 word8ToChar = Data.Char.chr . fromIntegral
+
+wordToInt :: Word -> Int
+wordToInt = fromIntegral
 
 listDropEnd :: Int -> [a] -> [a]
 listDropEnd n xs = L.take (L.length xs - n) xs
