@@ -24,6 +24,8 @@ import Data.Bits ((.&.))
 import Data.Semigroup (Semigroup)
 import qualified Packed.Bytes.Small as BA
 import qualified Data.Semigroup as SG
+import qualified Data.Primitive as PM
+import qualified Packed.Bytes.Window as BAW
 
 newtype SmallText = SmallText ByteArray 
 
@@ -40,7 +42,11 @@ newtype SmallText = SmallText ByteArray
 -- This bloats all non-English text by one byte.
 
 instance Eq SmallText where
-  SmallText a == SmallText b = a == b
+  -- Change this to just use the Eq instance for ByteArray
+  -- once primitive-0.6.3 becomes common.
+  SmallText a == SmallText b = if PM.sizeofByteArray a == PM.sizeofByteArray b
+    then BAW.equals 0 0 (PM.sizeofByteArray a) a b
+    else False
 
 -- This is a boolean but with a more efficient way to
 -- do conjunction
