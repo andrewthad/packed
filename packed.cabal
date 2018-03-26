@@ -22,9 +22,9 @@ source-repository head
 library
   hs-source-dirs: src
   build-depends:
-      base >=4.10 && <5
-    , ghc-prim >= 0.5.1 && < 0.6
-    , primitive >= 0.6 && < 0.7
+      base >= 4.9 && < 5.0
+    , ghc-prim >= 0.5.0 && < 0.6
+    , primitive >= 0.6.1 && < 0.7
   exposed-modules:
     Packed.Bytes
     Packed.Bytes.Window

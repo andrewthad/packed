@@ -25,13 +25,20 @@ module Packed.Bytes.Parser
   , takeBytesWhileMember
   , takeBytesUntilMemberConsume
   , takeBytesUntilByteConsume
+  , skipUntilByteConsume
+  , skipDigits
   , bytes
   , byte
   , any
   , endOfInput
+  , isEndOfInput
   , replicate
   , replicateUntilEnd
+  -- , replicateIntersperseUntilEnd
+  -- , replicateUntilByte
   , replicateUntilMember
+  , foldlIntersperseParserUntilEnd
+  , replicate
   , failure
     -- * ASCII
   , skipSpace
@@ -236,6 +243,28 @@ takeBytesUntilByteConsumeUnboxed !theByte = ParserLevity (go (# (# #) | #)) wher
       (# s1, r #) -> go (# | appendMaybeBytes mbytes bytes0 #) r s1
     Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | appendMaybeBytes mbytes (# arr, off, ix -# off #) #) #) #)
 
+skipDigits :: Parser ()
+skipDigits = Parser (ParserLevity go) where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
+  go (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findNonDigit (I# off) (I# len) (ByteArray arr) of
+    Nothing -> case streamFunc s0 of
+      (# s1, r #) -> go r s1
+    Just (I# ix, _) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | () #) #) #)
+
+skipUntilByteConsume :: Word8 -> Parser ()
+skipUntilByteConsume (W8# w) = Parser (skipUntilByteConsumeUnboxed w)
+
+skipUntilByteConsumeUnboxed :: Word# -> ParserLevity 'LiftedRep ()
+skipUntilByteConsumeUnboxed !theByte = ParserLevity go where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
+  go (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findByte (I# off) (I# len) (W8# theByte) (ByteArray arr) of
+    Nothing -> case streamFunc s0 of
+      (# s1, r #) -> go r s1
+    Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | () #) #) #)
+
+
 {-# INLINE takeBytesUntilEndOfLineConsume #-}
 takeBytesUntilEndOfLineConsume :: Parser Bytes
 takeBytesUntilEndOfLineConsume = Parser (boxBytesParser takeBytesUntilEndOfLineConsumeUnboxed)
@@ -295,6 +324,15 @@ anyUnboxed = ParserLevity go where
     (\s -> (# s, (# (# (# #) | #), (# (# #) | #) #) #))
     (\theByte theBytes stream s ->
       (# s, (# (# | (# unsafeDrop# 1 theBytes, stream #) #), (# | theByte #) #) #)
+    )
+
+isEndOfInput :: Parser Bool
+isEndOfInput = Parser (ParserLevity go) where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep Bool #)
+  go m s0 = withNonEmpty m s0
+    (\s -> (# s, (# (# (# #) | #), (# | True #) #) #))
+    (\_ theBytes stream s -> 
+      (# s, (# (# | (# theBytes, stream #) #), (# | False #) #) #)
     )
 
 endOfInputUnboxed :: ParserLevity 'LiftedRep ()
@@ -357,6 +395,28 @@ replicate (I# total) (Parser (ParserLevity f)) =
     _ -> case unsafeFreezeArray# xs s0 of
       (# s1, xsFrozen #) -> (# s1, (# m0, (# | Array xsFrozen #) #) #)
         
+foldlIntersperseParserUntilEnd :: forall a b.
+     Parser b -- ^ separator, result is discarded
+  -> a -- ^ initial accumulator
+  -> (a -> Parser a) -- ^ parser that takes previous accumulator
+  -> Parser a
+foldlIntersperseParserUntilEnd sep a0 p = isEndOfInput >>= \case
+  True -> return a0
+  False -> do
+    a1 <- p a0
+    let go !a = isEndOfInput >>= \case
+          True -> return a
+          False -> do
+            sep
+            p a >>= go
+    go a1
+
+-- replicateIntersperseUntilEnd :: forall a b. Parser b -> Parser a -> Parser (Array a)
+-- replicateIntersperseUntilEnd = _
+
+-- replicateUntilMember :: forall a. ByteSet -> Parser a -> Parser (Array a)
+-- replicateUntilMember !set (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
+
 replicateUntilEnd :: forall a. Parser a -> Parser (Array a)
 replicateUntilEnd (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
   go :: Int# -> [a] -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (Array a) #)

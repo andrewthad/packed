@@ -27,6 +27,7 @@ module Packed.Bytes.Window
   , equality
   , findMemberByte
   , findNonMemberByte
+  , findNonDigit
   , stripPrefixResumable
     -- * Hashing
   , hash
@@ -50,6 +51,7 @@ import Data.Bits (xor,(.|.),(.&.),complement,unsafeShiftL,finiteBitSize,
   unsafeShiftR,countLeadingZeros)
 import Control.Monad.ST (ST,runST)
 import Packed.Bytes.Set (ByteSet)
+import qualified Data.Char
 import qualified Data.Primitive as PM
 import qualified Packed.Bytes.Set as ByteSet
 
@@ -192,6 +194,12 @@ findNonMemberByte !(I# off) !(I# len) !(ByteSet.ByteSet (ByteArray set)) !(ByteA
     (# (# #) | #) -> Nothing
     (# | (# i, w #) #) -> Just (I# i, W8# w)
 
+findNonDigit :: Int -> Int -> ByteArray -> Maybe (Int,Word8)
+findNonDigit !(I# off) !(I# len) !(ByteArray arr) =
+  case findNonDigit' off len arr of
+    (# (# #) | #) -> Nothing
+    (# | (# i, w #) #) -> Just (I# i, W8# w)
+
 {-# NOINLINE findMemberByte' #-}
 findMemberByte' :: Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
 findMemberByte' off# len# set# arr# = findTemplateMemberByte' id off# len# set# arr#
@@ -199,6 +207,16 @@ findMemberByte' off# len# set# arr# = findTemplateMemberByte' id off# len# set# 
 {-# NOINLINE findNonMemberByte' #-}
 findNonMemberByte' :: Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
 findNonMemberByte' off# len# set# arr# = findTemplateMemberByte' not off# len# set# arr#
+
+{-# NOINLINE findNonDigit' #-}
+findNonDigit' :: Int# -> Int# -> ByteArray# -> Maybe# (# Int# , Word# #)
+findNonDigit' off# len# arr# = findTemplatePredicate' wordIsDigit off# len# arr#
+  where
+  wordIsDigit :: Word8 -> Bool
+  wordIsDigit w =
+    Data.Char.chr (wordToInt (word8ToWord w)) >= '0' &&
+    Data.Char.chr (wordToInt (word8ToWord w)) <= '9'
+
 
 {-# INLINE findTemplateMemberByte' #-}
 findTemplateMemberByte' :: (Bool -> Bool) -> Int# -> Int# -> ByteArray# -> ByteArray# -> Maybe# (# Int# , Word# #)
@@ -214,6 +232,23 @@ findTemplateMemberByte' tweak off# len# set# arr# = go off
     then 
       let !w@(W8# w#) = unsafeIndex arr ix
        in if tweak (ByteSet.member w set)
+            then (# | (# unboxInt ix, w# #) #)
+            else go (ix + 1)
+    else (# (# #) | #)
+
+{-# INLINE findTemplatePredicate' #-}
+findTemplatePredicate' :: (Word8 -> Bool) -> Int# -> Int# -> ByteArray# -> Maybe# (# Int# , Word# #)
+findTemplatePredicate' predicate off# len# arr# = go off
+  where
+  !off = I# off#
+  !len = I# len#
+  !end = off + len
+  !arr = ByteArray arr#
+  go :: Int -> Maybe# (# Int# , Word# #)
+  go !ix = if ix < end
+    then 
+      let !w@(W8# w#) = unsafeIndex arr ix
+       in if predicate w
             then (# | (# unboxInt ix, w# #) #)
             else go (ix + 1)
     else (# (# #) | #)
