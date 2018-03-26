@@ -25,6 +25,7 @@ module Packed.Bytes.Parser
   , takeBytesWhileMember
   , takeBytesUntilMemberConsume
   , takeBytesUntilByteConsume
+  , takeBytesUntilByte
   , skipUntilByteConsume
   , skipDigits
   , bytes
@@ -243,6 +244,23 @@ takeBytesUntilByteConsumeUnboxed !theByte = ParserLevity (go (# (# #) | #)) wher
       (# s1, r #) -> go (# | appendMaybeBytes mbytes bytes0 #) r s1
     Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | appendMaybeBytes mbytes (# arr, off, ix -# off #) #) #) #)
 
+-- | Takes all 'Bytes' until the first occurrence of the given byte.
+--   The bytes leading up to it are returned, and the matching byte
+--   itself remains part of the input.
+{-# INLINE takeBytesUntilByte #-}
+takeBytesUntilByte :: Word8 -> Parser Bytes
+takeBytesUntilByte (W8# theByte) = Parser (boxBytesParser (takeBytesUntilByteUnboxed theByte))
+
+{-# NOINLINE takeBytesUntilByteUnboxed #-}
+takeBytesUntilByteUnboxed :: Word# -> ParserLevity BytesRep Bytes#
+takeBytesUntilByteUnboxed !theByte = ParserLevity (go (# (# #) | #)) where
+  go :: Maybe# Bytes# -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s BytesRep Bytes# #)
+  go !mbytes (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
+  go !mbytes (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findByte (I# off) (I# len) (W8# theByte) (ByteArray arr) of
+    Nothing -> case streamFunc s0 of
+      (# s1, r #) -> go (# | appendMaybeBytes mbytes bytes0 #) r s1
+    Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# (ix -# off)) bytes0, stream0 #) #), (# | appendMaybeBytes mbytes (# arr, off, ix -# off #) #) #) #)
+
 skipDigits :: Parser ()
 skipDigits = Parser (ParserLevity go) where
   go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
@@ -250,7 +268,7 @@ skipDigits = Parser (ParserLevity go) where
   go (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findNonDigit (I# off) (I# len) (ByteArray arr) of
     Nothing -> case streamFunc s0 of
       (# s1, r #) -> go r s1
-    Just (I# ix, _) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | () #) #) #)
+    Just (I# ix, _) -> (# s0, (# (# | (# unsafeDrop# (I# (ix -# off)) bytes0, stream0 #) #), (# | () #) #) #)
 
 skipUntilByteConsume :: Word8 -> Parser ()
 skipUntilByteConsume (W8# w) = Parser (skipUntilByteConsumeUnboxed w)
