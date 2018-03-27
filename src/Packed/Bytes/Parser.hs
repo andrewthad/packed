@@ -23,6 +23,7 @@ module Packed.Bytes.Parser
   , Leftovers(..)
   , parseBytes
   , parseStreamST
+  , parseStreamIO
   , decimalWord
   , takeBytesWhileMember
   , takeBytesUntilMemberConsume
@@ -55,8 +56,9 @@ import GHC.Int (Int(I#))
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),(<#),
   MutableArray#,writeArray#,unsafeFreezeArray#,newArray#,
   unsafeFreezeByteArray#,newByteArray#,runRW#,
-  plusWord#,timesWord#,indexWord8Array#,eqWord#,fromListN)
-import GHC.Types (TYPE,RuntimeRep(..))
+  plusWord#,timesWord#,indexWord8Array#,eqWord#,fromListN,
+  RealWorld)
+import GHC.Types (TYPE,RuntimeRep(..),IO(..))
 import GHC.Word (Word(W#),Word8(W8#))
 import GHC.ST (ST(..))
 import Packed.Bytes (Bytes(..))
@@ -109,6 +111,11 @@ parseBytes bytes p = runST $ do
 
 parseStreamST :: ByteStream s -> Parser a -> ST s (Result s a)
 parseStreamST stream (Parser (ParserLevity f)) = ST $ \s0 ->
+  case f (# | (# (# unboxByteArray BA.empty, 0#, 0# #), stream #) #) s0 of
+    (# s1, r #) -> (# s1, boxResult r #)
+
+parseStreamIO :: ByteStream RealWorld -> Parser a -> IO (Result RealWorld a)
+parseStreamIO stream (Parser (ParserLevity f)) = IO $ \s0 ->
   case f (# | (# (# unboxByteArray BA.empty, 0#, 0# #), stream #) #) s0 of
     (# s1, r #) -> (# s1, boxResult r #)
 
