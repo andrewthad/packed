@@ -1,5 +1,6 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# OPTIONS_GHC
@@ -15,6 +16,7 @@ module Packed.Bytes.Table
   , lookup
   , fromList
   , fromListWith
+  , toList
   , construct
   , twoExp
   , truncLogBaseTwo
@@ -28,11 +30,13 @@ import Data.Primitive (ByteArray,MutableArray)
 import Data.Primitive.SmallArray (SmallArray)
 import Packed.Bytes (Bytes)
 import Control.Monad.ST (ST,runST)
-import Data.Monoid (Any(..))
+import Data.Monoid (Any(..),Monoid(..))
+import Data.Semigroup (Semigroup)
 import Data.Bits ((.&.),unsafeShiftL,countLeadingZeros,finiteBitSize)
 
 import qualified Packed.Bytes.Small as SB
 import qualified Packed.Bytes as B
+import qualified Data.Semigroup as SG
 import qualified Data.Primitive as PM
 import qualified Data.Primitive.SmallArray as PMSA
 
@@ -68,6 +72,40 @@ data TableBuilder s v = TableBuilder
 data ArrList v
   = ArrListCons !ByteArray !v !(ArrList v)
   | ArrListNil
+
+-- Reconsider this. We should probably have a Semigroup constraint
+-- on the element type.
+instance Semigroup (BytesTable v) where
+  (<>) = append
+  
+instance Monoid (BytesTable v) where
+  mempty = empty
+  mappend = (SG.<>)
+
+empty :: BytesTable v
+empty = runST $ do
+  -- i think we could use 1 instead of 2. We definitely
+  -- cannot use 0.
+  marr <- PMSA.newSmallArray 2 CellZero
+  arr <- PMSA.unsafeFreezeSmallArray marr
+  return (BytesTable arr)
+
+append :: BytesTable v -> BytesTable v -> BytesTable v
+append a b = fromList (toList a ++ toList b)
+
+toList :: BytesTable v -> [(Bytes,v)]
+toList (BytesTable arr) = foldMap cellToList arr
+
+cellToList :: Cell v -> [(Bytes,v)]
+cellToList = \case
+  CellZero -> []
+  CellOne barr v -> [(B.Bytes barr 0 (SB.length barr), v)]
+  CellMany _ arr -> foldMap infoToList arr
+
+infoToList :: Info v -> [(Bytes,v)]
+infoToList = \case
+  InfoAbsent -> []
+  InfoPresent barr v -> [(B.Bytes barr 0 (SB.length barr), v)]
 
 showArrList :: ArrList v -> String
 showArrList = show . arrListToList
@@ -136,7 +174,7 @@ buildCollisionless !salt !arrList = if salt < 30
         InfoAbsent -> do
           PMSA.writeSmallArray msarr ix (InfoPresent b v)
           return (Any False)
-        InfoPresent existing _ -> return (Any True) -- error ("buildCollisionless: found " ++ show existing ++ " at ix " ++ show ix) -- return (Any True)
+        InfoPresent _ _ -> return (Any True) -- error ("buildCollisionless: found " ++ show existing ++ " at ix " ++ show ix) -- return (Any True)
     -- _ <- fail ("hasCollisions: " ++ show hasCollisions)
     if hasCollisions
       then buildCollisionless (salt + 1) arrList
