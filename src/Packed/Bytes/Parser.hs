@@ -19,7 +19,9 @@ module Packed.Bytes.Parser
   ( Parser(..)
   , ParserLevity(..)
   , Result(..)
+  , PureResult(..)
   , Leftovers(..)
+  , parseBytes
   , parseStreamST
   , decimalWord
   , takeBytesWhileMember
@@ -89,6 +91,21 @@ data Leftovers s = Leftovers
   , leftoversStream :: ByteStream s
     -- ^ The remaining stream
   }
+
+data PureResult a = PureResult
+  { pureResultLeftovers :: {-# UNPACK #-} !Bytes
+  , pureResultValue :: !(Maybe a)
+  } deriving (Show,Eq)
+
+parseBytes :: Bytes -> Parser a -> PureResult a
+parseBytes bytes p = runST $ do
+  Result mleftovers mval <- parseStreamST (Stream.fromBytes bytes) p
+  theLeftovers <- case mleftovers of
+    Nothing -> return B.empty
+    Just (Leftovers chunk stream) -> do
+      others <- Stream.toBytesST stream
+      return (B.append chunk others)
+  return (PureResult theLeftovers mval)
 
 parseStreamST :: ByteStream s -> Parser a -> ST s (Result s a)
 parseStreamST stream (Parser (ParserLevity f)) = ST $ \s0 ->

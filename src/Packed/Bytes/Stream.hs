@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UnboxedTuples #-}
@@ -10,6 +11,8 @@ module Packed.Bytes.Stream
   ( ByteStream(..)
   , empty
   , singleton
+  , toBytesST
+  , nextChunkST
   , unpack
   , unpackST
   , fromBytes
@@ -50,6 +53,19 @@ singleton !w = ByteStream
 fromBytes :: Bytes -> ByteStream s
 fromBytes b = ByteStream
   (\s0 -> (# s0, (# | (# unboxBytes b, empty #) #) #))
+
+toBytesST :: ByteStream s -> ST s Bytes
+toBytesST = fmap mconcat . go where
+  go :: ByteStream s -> ST s [Bytes]
+  go s0 = nextChunkST s0 >>= \case
+    Nothing -> return []
+    Just (b,s1) -> fmap (b:) (go s1)
+
+nextChunkST :: ByteStream s -> ST s (Maybe (Bytes,ByteStream s))
+nextChunkST (ByteStream f) = ST $ \s0 -> case f s0 of
+  (# s1, r #) -> case r of
+    (# (# #) | #) -> (# s1, Nothing #)
+    (# | (# theBytes, theStream #) #) -> (# s1, Just (boxBytes theBytes, theStream) #)
 
 fromArray :: forall s. Array Bytes -> ByteStream s
 fromArray xs = ByteStream (go 0) where

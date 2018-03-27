@@ -40,6 +40,8 @@ module Packed.Bytes
 import Prelude hiding (take,length,replicate,drop,null)
 
 import Packed.Bytes.Small (ByteArray(..))
+import Data.Monoid (Monoid(..))
+import Data.Semigroup (Semigroup)
 import Data.Word (Word8)
 import GHC.Ptr (Ptr(..))
 import GHC.Exts (RealWorld,State#,Int#,MutableByteArray#,Addr#,ByteArray#,
@@ -53,6 +55,7 @@ import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes.Small as BA
 import qualified System.IO as SIO
 import qualified Data.Primitive as PM
+import qualified Data.Semigroup as SG
 
 data Bytes = Bytes
   {-# UNPACK #-} !ByteArray -- payload
@@ -69,6 +72,13 @@ instance Eq Bytes where
 
 instance Show Bytes where
   show x = "pack " ++ show (unpack x)
+
+instance Semigroup Bytes where
+  (<>) = append
+
+instance Monoid Bytes where
+  mempty = empty
+  mappend = (SG.<>)
 
 cons :: Word8 -> Bytes -> Bytes
 cons w (Bytes arr off len) = runST $ do
