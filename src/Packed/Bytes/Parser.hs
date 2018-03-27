@@ -27,6 +27,7 @@ module Packed.Bytes.Parser
   , takeBytesUntilByteConsume
   , takeBytesUntilByte
   , skipUntilByteConsume
+  , skipUntilByte
   , skipDigits
   , bytes
   , byte
@@ -253,6 +254,7 @@ takeBytesUntilByte (W8# theByte) = Parser (boxBytesParser (takeBytesUntilByteUnb
 
 {-# NOINLINE takeBytesUntilByteUnboxed #-}
 takeBytesUntilByteUnboxed :: Word# -> ParserLevity BytesRep Bytes#
+-- fix this. It should succeed if it reaches the end of the input.
 takeBytesUntilByteUnboxed !theByte = ParserLevity (go (# (# #) | #)) where
   go :: Maybe# Bytes# -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s BytesRep Bytes# #)
   go !mbytes (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
@@ -282,6 +284,14 @@ skipUntilByteConsumeUnboxed !theByte = ParserLevity go where
       (# s1, r #) -> go r s1
     Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | () #) #) #)
 
+skipUntilByte :: Word8 -> Parser ()
+skipUntilByte (W8# theByte) = Parser (ParserLevity go) where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# | () #) #) #)
+  go (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findByte (I# off) (I# len) (W8# theByte) (ByteArray arr) of
+    Nothing -> case streamFunc s0 of
+      (# s1, r #) -> go r s1
+    Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# (ix -# off)) bytes0, stream0 #) #), (# | () #) #) #)
 
 {-# INLINE takeBytesUntilEndOfLineConsume #-}
 takeBytesUntilEndOfLineConsume :: Parser Bytes
