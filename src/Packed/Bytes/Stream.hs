@@ -12,6 +12,7 @@ module Packed.Bytes.Stream
   , empty
   , singleton
   , toBytesST
+  , toBytes
   , nextChunkST
   , unpack
   , unpackST
@@ -54,12 +55,25 @@ fromBytes :: Bytes -> ByteStream s
 fromBytes b = ByteStream
   (\s0 -> (# s0, (# | (# unboxBytes b, empty #) #) #))
 
+toBytes :: ByteStream RealWorld -> IO Bytes
+toBytes = fmap mconcat . go where
+  go :: ByteStream RealWorld -> IO [Bytes]
+  go s0 = nextChunk s0 >>= \case
+    Nothing -> return []
+    Just (b,s1) -> fmap (b:) (go s1)
+
 toBytesST :: ByteStream s -> ST s Bytes
 toBytesST = fmap mconcat . go where
   go :: ByteStream s -> ST s [Bytes]
   go s0 = nextChunkST s0 >>= \case
     Nothing -> return []
     Just (b,s1) -> fmap (b:) (go s1)
+
+nextChunk :: ByteStream RealWorld -> IO (Maybe (Bytes,ByteStream RealWorld))
+nextChunk (ByteStream f) = IO $ \s0 -> case f s0 of
+  (# s1, r #) -> case r of
+    (# (# #) | #) -> (# s1, Nothing #)
+    (# | (# theBytes, theStream #) #) -> (# s1, Just (boxBytes theBytes, theStream) #)
 
 nextChunkST :: ByteStream s -> ST s (Maybe (Bytes,ByteStream s))
 nextChunkST (ByteStream f) = ST $ \s0 -> case f s0 of
