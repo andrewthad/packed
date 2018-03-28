@@ -77,6 +77,7 @@ tests = testGroup "Tests"
       , testGroup "Artificial"
         [ testProperty "alpha" byteParserArtificalA
         , testProperty "beta" byteParserArtificalB
+        , testProperty "delta" byteParserArtificalDelta
         , testProperty "http-request" byteParserHttpRequest
         ]
       ]
@@ -297,6 +298,31 @@ parserArtificialB = do
   Parser.bytes (s2b ").")
   Parser.endOfInput
   return (ArtificialBeta name attrs)
+
+byteParserArtificalDelta :: Property
+byteParserArtificalDelta = property $ do
+  let sample = "56437:2145:123:24:2"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser parserArtificialDelta stream
+  Nothing === mextra
+  Just () === r
+
+
+parserArtificialDelta :: Parser ()
+parserArtificialDelta = do
+  Parser.skipDigits
+  name <- Parser.byte (c2w ':')
+  Parser.skipDigits
+  name <- Parser.byte (c2w ':')
+  Parser.skipDigits
+  name <- Parser.byte (c2w ':')
+  Parser.skipDigits
+  name <- Parser.byte (c2w ':')
+  Parser.skipDigits
+  Parser.endOfInput
 
 byteParserEolAccept :: Property
 byteParserEolAccept = property $ do

@@ -290,7 +290,7 @@ takeBytesUntilByteUnboxed !theByte = ParserLevity (go (# (# #) | #)) where
 skipDigits :: Parser ()
 skipDigits = Parser (ParserLevity go) where
   go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
-  go (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# (# #) | #) #) #)
+  go (# (# #) | #) s0 = (# s0, (# (# (# #) | #), (# | () #) #) #)
   go (# | (# bytes0@(# arr, off, len #), !stream0@(ByteStream streamFunc) #) #) s0 = case BAW.findNonDigit (I# off) (I# len) (ByteArray arr) of
     Nothing -> case streamFunc s0 of
       (# s1, r #) -> go r s1

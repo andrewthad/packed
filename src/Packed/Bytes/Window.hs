@@ -214,8 +214,8 @@ findNonDigit' off# len# arr# = findTemplatePredicate' wordIsDigit off# len# arr#
   where
   wordIsDigit :: Word8 -> Bool
   wordIsDigit w =
-    Data.Char.chr (wordToInt (word8ToWord w)) >= '0' &&
-    Data.Char.chr (wordToInt (word8ToWord w)) <= '9'
+    Data.Char.chr (wordToInt (word8ToWord w)) < '0' ||
+    Data.Char.chr (wordToInt (word8ToWord w)) > '9'
 
 
 {-# INLINE findTemplateMemberByte' #-}
