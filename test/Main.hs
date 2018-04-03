@@ -27,7 +27,7 @@ import Packed.Bytes (Bytes)
 import Packed.Bytes.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Small (ByteArray)
-import Packed.Bytes.Stream (ByteStream)
+import Packed.Bytes.Stream.ST (ByteStream)
 import Test.Tasty (defaultMain,testGroup,TestTree)
 import Test.Tasty.HUnit (testCase)
 import Test.Tasty.Hedgehog (testProperty)
@@ -40,7 +40,7 @@ import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Parser as Parser
 import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Small as BA
-import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Text as T
@@ -216,7 +216,7 @@ byteStreamAppendProp :: Property
 byteStreamAppendProp = property $ do
   wordList :: [Word8] <- forAll (list (linear 0 128) enumBounded)
   let stream = foldMap Stream.singleton wordList
-  let v = runST $ Stream.unpackST stream
+  let v = runST $ Stream.unpack stream
   wordList === v
 
 byteParserDecimalWord :: Property
@@ -234,7 +234,7 @@ runExampleParser parser stream = runST $ do
   mextra <- case mleftovers of
     Nothing -> return Nothing
     Just (Parser.Leftovers chunk remainingStream) -> do
-      bs <- Stream.unpackST remainingStream
+      bs <- Stream.unpack remainingStream
       return (Just (map word8ToChar (B.unpack chunk ++ bs)))
   return (r,mextra)
 

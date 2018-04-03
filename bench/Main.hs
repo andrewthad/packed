@@ -25,7 +25,7 @@ import qualified Data.Hashable as H
 import qualified GHC.OldList as L
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Table as BT
-import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Parser as Parser
 import qualified Packed.Text as T
 

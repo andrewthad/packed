@@ -63,13 +63,13 @@ import GHC.Word (Word(W#),Word8(W8#))
 import GHC.ST (ST(..))
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Small (ByteArray(..))
-import Packed.Bytes.Stream (ByteStream(..))
+import Packed.Bytes.Stream.ST (ByteStream(..))
 import Packed.Bytes.Set (ByteSet)
 import Data.Primitive (Array(..),MutableArray(..))
 import Control.Monad.ST (runST)
 import qualified Control.Monad
 import qualified Packed.Bytes.Small as BA
-import qualified Packed.Bytes.Stream as Stream
+import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Set as ByteSet
@@ -105,7 +105,7 @@ parseBytes bytes p = runST $ do
   theLeftovers <- case mleftovers of
     Nothing -> return B.empty
     Just (Leftovers chunk stream) -> do
-      others <- Stream.toBytesST stream
+      others <- Stream.toBytes stream
       return (B.append chunk others)
   return (PureResult theLeftovers mval)
 
@@ -159,6 +159,9 @@ bytesIndex (# arr, off, _ #) ix = BA.unsafeIndex (ByteArray arr) (I# off + ix)
 
 word8ToWord :: Word8 -> Word
 word8ToWord = fromIntegral
+
+-- option :: a -> Parser a -> Parser a
+-- option a (
 
 nextNonEmpty :: ByteStream s -> State# s -> (# State# s, Maybe# (Leftovers# s) #)
 nextNonEmpty (ByteStream f) s0 = case f s0 of

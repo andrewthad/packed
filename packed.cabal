@@ -32,7 +32,8 @@ library
     Packed.Bytes.Small
     Packed.Bytes.Table
     Packed.Bytes.Parser
-    Packed.Bytes.Stream
+    Packed.Bytes.Stream.ST
+    Packed.Bytes.Stream.IO
     Packed.Bytes.Set
     Packed.Text
     Packed.Text.Small
