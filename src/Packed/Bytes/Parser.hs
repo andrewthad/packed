@@ -31,9 +31,11 @@ module Packed.Bytes.Parser
   , takeBytesUntilByte
   , skipUntilByteConsume
   , skipUntilByte
+  , skipWhileByte
   , skipDigits
   , bytes
   , byte
+  , optionalByte
   , peek
   , any
   , endOfInput
@@ -314,6 +316,19 @@ skipUntilByteConsumeUnboxed !theByte = ParserLevity go where
       (# s1, r #) -> go r s1
     Just (I# ix) -> (# s0, (# (# | (# unsafeDrop# (I# ((ix -# off) +# 1# )) bytes0, stream0 #) #), (# | () #) #) #)
 
+-- | Skips all bytes matching the given byte.
+skipWhileByte :: Word8 -> Parser ()
+-- TODO: Improve the performance of this. I suspect that we can travel a full machine word at a time.
+-- We will need to add something to Packed.Bytes.Window to make this work.
+skipWhileByte theByte = go where
+  go = isEndOfInput >>= \case
+    True -> return ()
+    False -> do
+      b <- peek
+      if b == theByte
+        then any >> go
+        else return ()
+
 skipUntilByte :: Word8 -> Parser ()
 skipUntilByte (W8# theByte) = Parser (ParserLevity go) where
   go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
@@ -375,6 +390,16 @@ byteUnboxed expectedByte@(W8# expected) = ParserLevity go where
       _ -> (# s, (# (# | (# theBytes, stream #) #), (# (# #) | #) #) #)
     )
 
+optionalByteUnboxed :: Word8 -> ParserLevity 'LiftedRep ()
+optionalByteUnboxed expectedByte@(W8# expected) = ParserLevity go where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go m s0 = withNonEmpty m s0
+    (\s -> (# s, (# (# (# #) | #), (# | () #) #) #))
+    (\actual theBytes stream s -> case eqWord# expected actual of
+      1# -> (# s, (# (# | (# unsafeDrop# 1 theBytes, stream #) #), (# | () #) #) #)
+      _ -> (# s, (# (# | (# theBytes, stream #) #), (# | () #) #) #)
+    )
+
 anyUnboxed :: ParserLevity 'WordRep Word#
 anyUnboxed = ParserLevity go where
   go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'WordRep Word# #)
@@ -429,6 +454,12 @@ peek = Parser (boxWord8Parser peekUnboxed)
 -- | Consume a byte matching the specified one.
 byte :: Word8 -> Parser ()
 byte theByte = Parser (byteUnboxed theByte)
+
+-- | Consume a byte matching the specified one. If the next byte
+-- in the input does not match the given byte, it is not consumed.
+-- This parser always succeeds even if there is no input.
+optionalByte :: Word8 -> Parser ()
+optionalByte theByte = Parser (optionalByteUnboxed theByte)
 
 bytes :: Bytes -> Parser ()
 bytes b = Parser (bytesUnboxed b)
