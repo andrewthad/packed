@@ -34,6 +34,7 @@ module Packed.Bytes.Parser
   , skipDigits
   , bytes
   , byte
+  , peek
   , any
   , endOfInput
   , isEndOfInput
@@ -41,9 +42,9 @@ module Packed.Bytes.Parser
   , replicateUntilEnd
   -- , replicateIntersperseUntilEnd
   -- , replicateUntilByte
-  , replicateSeparatorByte
-  , replicateSeparatorMember
-  , foldlIntersperseParserUntilEnd
+  , replicateIntersperseByte
+  , replicateIntersperseMember
+  , foldIntersperseParserUntilEnd
   , replicate
   , failure
     -- * ASCII
@@ -382,6 +383,17 @@ anyUnboxed = ParserLevity go where
       (# s, (# (# | (# unsafeDrop# 1 theBytes, stream #) #), (# | theByte #) #) #)
     )
 
+peekUnboxed :: ParserLevity 'WordRep Word#
+peekUnboxed = ParserLevity go where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'WordRep Word# #)
+  go m s0 = withNonEmpty m s0
+    (\s -> (# s, (# (# (# #) | #), (# (# #) | #) #) #))
+    (\theByte theBytes stream s ->
+      (# s, (# (# | (# theBytes, stream #) #), (# | theByte #) #) #)
+    )
+
+-- | Returns true if there is no more input and false otherwise.
+-- This parser always succeeds.
 isEndOfInput :: Parser Bool
 isEndOfInput = Parser (ParserLevity go) where
   go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep Bool #)
@@ -400,12 +412,20 @@ endOfInputUnboxed = ParserLevity go where
       (# s, (# (# | (# theBytes, stream #) #), (# (# #) | #) #) #)
     )
 
+-- | Only succeed if there is no more input remaining.
 endOfInput :: Parser ()
 endOfInput = Parser endOfInputUnboxed
 
+-- | Consume the next byte from the input.
 any :: Parser Word8
 any = Parser (boxWord8Parser anyUnboxed)
 
+-- | Look at the next byte without consuming it. This parser will
+-- fail if there is no more input.
+peek :: Parser Word8
+peek = Parser (boxWord8Parser peekUnboxed)
+
+-- | Consume a byte matching the specified one.
 byte :: Word8 -> Parser ()
 byte theByte = Parser (byteUnboxed theByte)
 
@@ -451,12 +471,14 @@ replicate (I# total) (Parser (ParserLevity f)) =
     _ -> case unsafeFreezeArray# xs s0 of
       (# s1, xsFrozen #) -> (# s1, (# m0, (# | Array xsFrozen #) #) #)
         
-foldlIntersperseParserUntilEnd :: forall a b.
+-- | Repeatly run the folding parser followed by the separator parser
+-- until the end of the input is reached.
+foldIntersperseParserUntilEnd :: 
      Parser b -- ^ separator, result is discarded
   -> a -- ^ initial accumulator
   -> (a -> Parser a) -- ^ parser that takes previous accumulator
   -> Parser a
-foldlIntersperseParserUntilEnd sep a0 p = isEndOfInput >>= \case
+foldIntersperseParserUntilEnd sep !a0 p = isEndOfInput >>= \case
   True -> return a0
   False -> do
     a1 <- p a0
@@ -465,6 +487,29 @@ foldlIntersperseParserUntilEnd sep a0 p = isEndOfInput >>= \case
           False -> do
             sep
             p a >>= go
+    go a1
+
+-- | Repeatly run the folding parser followed by consuming the separator.
+-- Completes successfully when a byte other than the separator is encountered
+-- or when the end of the input is reached.
+foldIntersperseByte :: 
+     Word8 -- ^ separator
+  -> a -- ^ initial accumulator
+  -> (a -> Parser a) -- ^ parser that takes previous accumulator
+  -> Parser a
+foldIntersperseByte !sep !a0 p = isEndOfInput >>= \case
+  True -> return a0
+  False -> do
+    a1 <- p a0
+    let go !a = isEndOfInput >>= \case
+          True -> return a
+          False -> do
+            b <- peek
+            if b == sep
+              then do
+                _ <- any
+                p a >>= go
+              else return a
     go a1
 
 -- replicateIntersperseUntilEnd :: forall a b. Parser b -> Parser a -> Parser (Array a)
@@ -492,13 +537,13 @@ replicateUntilEnd (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) w
 -- the given byte set after each run of the parser. The byte set can be
 -- understood as all the bytes are considered separators. If the stream
 -- ends where a separator is expected, this is considered a successful parse.
-replicateSeparatorMember :: forall a. ByteSet -> Parser a -> Parser (Array a)
-replicateSeparatorMember !set (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
+replicateIntersperseMember :: forall a. ByteSet -> Parser a -> Parser (Array a)
+replicateIntersperseMember !set (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
   go :: Int# -> [a] -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (Array a) #)
   go !n !xs !m !s0 = withNonEmpty m s0
     (\s1 ->
         let theArray :: Array a
-            !theArray = reverseArrayFromListN "replicateSeparatorMember" (I# n) xs
+            !theArray = reverseArrayFromListN "replicateIntersperseMember" (I# n) xs
          in (# s1, (# (# (# #) | #), (# | theArray #) #) #)
     )
     (\theByte theBytes stream s1 -> case ByteSet.member (W8# theByte) set of
@@ -508,20 +553,20 @@ replicateSeparatorMember !set (Parser (ParserLevity f)) = Parser (ParserLevity (
           (# | !x #) -> go (n +# 1# ) (x : xs) leftovers s2
       False ->
         let theArray :: Array a
-            !theArray = reverseArrayFromListN "replicateSeparatorMember" (I# n) xs
+            !theArray = reverseArrayFromListN "replicateIntersperseMember" (I# n) xs
          in (# s1, (# (# | (# theBytes, stream #) #), (# | theArray #) #) #)
     )
 
 -- | Replicate the parser as long as we encounter the specified byte
 -- after each run of the parser. If the stream ends where the separator
 -- is expected, this is considered a successful parse.
-replicateSeparatorByte :: forall a. Word8 -> Parser a -> Parser (Array a)
-replicateSeparatorByte !(W8# sepByte) (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
+replicateIntersperseByte :: forall a. Word8 -> Parser a -> Parser (Array a)
+replicateIntersperseByte !(W8# sepByte) (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
   go :: Int# -> [a] -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (Array a) #)
   go !n !xs !m !s0 = withNonEmpty m s0
     (\s1 ->
         let theArray :: Array a
-            !theArray = reverseArrayFromListN "replicateSeparatorByte" (I# n) xs
+            !theArray = reverseArrayFromListN "replicateIntersperseByte" (I# n) xs
          in (# s1, (# (# (# #) | #), (# | theArray #) #) #)
     )
     (\theByte theBytes stream s1 -> case eqWord# theByte sepByte of
@@ -531,7 +576,7 @@ replicateSeparatorByte !(W8# sepByte) (Parser (ParserLevity f)) = Parser (Parser
           (# | !x #) -> go (n +# 1# ) (x : xs) leftovers s2
       _ -> 
         let theArray :: Array a
-            !theArray = reverseArrayFromListN "replicateSeparatorByte" (I# n) xs
+            !theArray = reverseArrayFromListN "replicateIntersperseByte" (I# n) xs
          in (# s1, (# (# | (# theBytes, stream #) #), (# | theArray #) #) #)
     )
 
