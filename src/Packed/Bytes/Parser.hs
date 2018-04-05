@@ -45,6 +45,7 @@ module Packed.Bytes.Parser
   , replicateIntersperseByte
   , replicateIntersperseMember
   , foldIntersperseParserUntilEnd
+  , foldIntersperseByte
   , replicate
   , failure
     -- * ASCII
