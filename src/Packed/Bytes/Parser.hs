@@ -53,6 +53,7 @@ module Packed.Bytes.Parser
   , replicate
   , trie
   , trieReader
+  , trieReaderState
   , failure
     -- * Stateful
   , statefully
@@ -679,6 +680,21 @@ trieReader (Trie.Trie node) = go node where
     go (PM.indexArray arr (word8ToInt b)) r
   go (Trie.NodeValueRun p _) r = p r
   go (Trie.NodeValueBranch p _) r = p r
+
+-- | Variant of 'trie' whose parsers modify state and accept an environment.
+trieReaderState :: Trie (r -> s -> Parser (s, a)) -> r -> s -> Parser (s,a)
+trieReaderState (Trie.Trie node) = go node where
+  go :: forall c b r' s'. Trie.Node c (r' -> s' -> Parser (s',b)) -> r' -> s' -> Parser (s',b)
+  go Trie.NodeEmpty _ _ = failure
+  go (Trie.NodeValueNil p) r s = p r s
+  go (Trie.NodeRun (Trie.Run arr n)) r s = do
+    bytes (B.fromByteArray arr)
+    go n r s
+  go (Trie.NodeBranch arr) r s = do
+    b <- any
+    go (PM.indexArray arr (word8ToInt b)) r s
+  go (Trie.NodeValueRun p _) r s = p r s
+  go (Trie.NodeValueBranch p _) r s = p r s
 
 createArray
   :: Int
