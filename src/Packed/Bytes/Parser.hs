@@ -67,6 +67,7 @@ module Packed.Bytes.Parser
   ) where
 
 import Prelude hiding (any,replicate)
+import Control.Applicative
 import GHC.Int (Int(I#))
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),(<#),
   MutableArray#,writeArray#,unsafeFreezeArray#,newArray#,
@@ -83,6 +84,7 @@ import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Trie (Trie)
 import Data.Primitive (Array(..),MutableArray(..))
 import Control.Monad.ST (runST)
+import qualified Data.Semigroup as SG
 import qualified Control.Monad
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Stream.ST as Stream
@@ -150,6 +152,7 @@ newtype Parser a = Parser (ParserLevity 'LiftedRep a)
 instance Functor Parser where
   fmap = mapParser
 
+-- Remember to write liftA2 by hand at some point.
 instance Applicative Parser where
   pure = pureParser
   (<*>) = Control.Monad.ap
@@ -157,6 +160,13 @@ instance Applicative Parser where
 instance Monad Parser where
   return = pure
   (>>=) = bindLifted
+
+instance Semigroup a => Semigroup (Parser a) where
+  (<>) = liftA2 (SG.<>)
+
+instance Monoid a => Monoid (Parser a) where
+  mappend = liftA2 (SG.<>)
+  mempty = pure mempty
 
 instance Functor (StatefulParser s) where
   fmap = mapStatefulParser
@@ -168,6 +178,14 @@ instance Applicative (StatefulParser s) where
 instance Monad (StatefulParser s) where
   return = pure
   (>>=) = bindStateful
+
+instance Semigroup a => Semigroup (StatefulParser s a) where
+  (<>) = liftA2 (SG.<>)
+
+instance Monoid a => Monoid (StatefulParser s a) where
+  mappend = liftA2 (SG.<>)
+  mempty = pure mempty
+
 
 newtype ParserLevity (r :: RuntimeRep) (a :: TYPE r) = ParserLevity
   { getParserLevity :: forall s.
