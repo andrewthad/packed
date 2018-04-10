@@ -168,7 +168,7 @@ instance Semigroup a => Semigroup (Parser a) where
   (<>) = liftA2 (SG.<>)
 
 instance Monoid a => Monoid (Parser a) where
-  mappend = liftA2 (SG.<>)
+  mappend = liftA2 mappend
   mempty = pure mempty
 
 instance Functor (StatefulParser s) where
@@ -186,7 +186,7 @@ instance Semigroup a => Semigroup (StatefulParser s a) where
   (<>) = liftA2 (SG.<>)
 
 instance Monoid a => Monoid (StatefulParser s a) where
-  mappend = liftA2 (SG.<>)
+  mappend = liftA2 mappend
   mempty = pure mempty
 
 
