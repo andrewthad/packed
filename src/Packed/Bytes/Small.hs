@@ -17,6 +17,7 @@ module Packed.Bytes.Small
   , unpack
   , singleton
   , append
+  , concatReversed
   , replicate
   , length
   , findByte
@@ -102,6 +103,28 @@ uncons arr0 = if lenArr > 0
   else Nothing
   where
   !lenArr = length arr0
+
+concatReversed :: [ByteArray] -> ByteArray
+concatReversed arrs = runST $ do
+  let len = sumLengths arrs 0
+  marr <- PM.newByteArray len
+  pasteReversedByteArrays marr len arrs
+  PM.unsafeFreezeByteArray marr
+
+-- internal function
+pasteReversedByteArrays :: MutableByteArray s -> Int -> [ByteArray] -> ST s ()
+pasteReversedByteArrays !_ !_ [] = return ()
+pasteReversedByteArrays !marr !ix (x : xs) = do
+  let nextIx = ix - length x
+  PM.copyByteArray marr nextIx x 0 (length x)
+  pasteReversedByteArrays marr nextIx xs
+
+-- internal function
+sumLengths :: [ByteArray] -> Int -> Int
+sumLengths = go
+  where
+  go [] !n = n
+  go (x : xs) !n = sumLengths xs (length x + n)
 
 replicate :: Int -> Word8 -> ByteArray
 replicate len@(I# len#) (W8# w#) = runST $ do

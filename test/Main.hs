@@ -8,6 +8,7 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 import Control.Monad (forM_)
+import Control.Applicative (liftA2)
 import Control.Monad.ST (ST,runST)
 import Data.Bifunctor (bimap)
 import Data.Bits ((.&.))
@@ -33,6 +34,7 @@ import Test.Tasty.HUnit (testCase)
 import Test.Tasty.Hedgehog (testProperty)
 
 import qualified Data.Char
+import qualified Data.Map
 import qualified Data.List.Split as LS
 import qualified Data.Set as S
 import qualified GHC.OldList as L
@@ -42,6 +44,7 @@ import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Table as BT
+import qualified Packed.Bytes.Trie as Trie
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Text as T
 import qualified Test.Tasty.Hedgehog as H
@@ -80,6 +83,12 @@ tests = testGroup "Tests"
         , testProperty "delta" byteParserArtificalDelta
         , testProperty "http-request" byteParserHttpRequest
         ]
+      ]
+    , testGroup "Trie"
+      [ testProperty "map-like" trieMapLikeProp
+      , testProperty "associative" trieMonoidAssociativeProp
+      , testProperty "commutative" trieMonoidCommutativeProp
+      , testProperty "lookup" trieLookupProp
       ]
     ]
   , testGroup "Text"
@@ -444,9 +453,19 @@ genCharUnicode = choice
 genByte :: Gen Word8
 genByte = word8 (linear minBound maxBound)
 
+genNarrowByte :: Gen Word8
+genNarrowByte = word8 (linear 1 3)
+
 genBytes :: Gen Bytes
 genBytes = do
   byteList <- list (linear 0 64) genByte
+  front <- genOffset (L.length byteList)
+  back <- genOffset (L.length byteList)
+  return (B.dropEnd back (B.drop front (B.pack byteList)))
+
+genNarrowBytes :: Gen Bytes
+genNarrowBytes = do
+  byteList <- list (linear 0 16) genNarrowByte
   front <- genOffset (L.length byteList)
   back <- genOffset (L.length byteList)
   return (B.dropEnd back (B.drop front (B.pack byteList)))
@@ -506,6 +525,52 @@ zipAndProp = property $ do
       ys = BA.pack ysList
   L.zipWith (.&.) xsList ysList === BA.unpack (BA.zipAnd xs ys)
 
+trieMapLikeProp :: Property
+trieMapLikeProp = property $ do
+  xsList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  let trie = Trie.fromList xsList
+      expectedMap = Data.Map.fromListWith (<>) xsList
+  -- Note: this currently relies on the Ord instance for Bytes
+  -- being a lexographic ordering. Change this at some point.
+  Trie.valid trie === True
+  Trie.toList trie === Data.Map.toList expectedMap
+
+trieMonoidAssociativeProp :: Property
+trieMonoidAssociativeProp = property $ do
+  xsList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  ysList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  zsList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  let x = Trie.fromList xsList
+      y = Trie.fromList ysList
+      z = Trie.fromList zsList
+  x <> (y <> z) === (x <> y) <> z
+
+trieMonoidCommutativeProp :: Property
+trieMonoidCommutativeProp = property $ do
+  xsList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  ysList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  let x = Trie.fromList xsList
+      y = Trie.fromList ysList
+  x <> y === y <> x
+  
+trieLookupProp :: Property
+trieLookupProp = property $ do
+  xsList :: [(Bytes,Sum Word)] <- forAll
+    (list (linear 0 256) (liftA2 (,) genNarrowBytes (fmap Sum (word (linear 1 99)))))
+  let trie = Trie.fromList xsList
+      expectedMap = Data.Map.fromListWith (<>) xsList
+  Trie.valid trie === True
+  forM_ xsList $ \(b,_) -> do
+    -- This makes hedgehog show us the failing key.
+    theBytes <- forAll (return b)
+    Trie.lookup theBytes trie === Data.Map.lookup theBytes expectedMap
+  
 safeIndex :: Int -> [a] -> Maybe a
 safeIndex !_ [] = Nothing
 safeIndex !ix (x : xs) = case compare ix 0 of

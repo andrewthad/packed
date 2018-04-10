@@ -15,7 +15,10 @@ module Packed.Bytes
   , empty
   , singleton
   , cons
+  , uncons
   , append
+  , concat
+  , concatReversed
   , pack
   , unpack
   , null
@@ -30,14 +33,18 @@ module Packed.Bytes
   , hashWith
     -- * Unsliced Byte Arrays
   , toByteArray
+  , fromByteArray
   , equalsByteArray
     -- * Characters
   , isAscii
     -- * IO
   , hGetSome
+    -- * Unsafe
+  , unsafeTake
+  , unsafeDrop
   ) where
 
-import Prelude hiding (take,length,replicate,drop,null)
+import Prelude hiding (take,length,replicate,drop,null,concat)
 
 import Packed.Bytes.Small (ByteArray(..))
 import Data.Monoid (Monoid(..))
@@ -49,7 +56,7 @@ import GHC.Exts (RealWorld,State#,Int#,MutableByteArray#,Addr#,ByteArray#,
 import GHC.Int (Int(I#))
 import GHC.IO (IO(..))
 import System.IO (Handle)
-import Control.Monad.ST (runST)
+import Control.Monad.ST (runST,ST)
 import qualified Foreign.Marshal.Alloc as FMA
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes.Small as BA
@@ -70,6 +77,11 @@ instance Eq Bytes where
       then BAW.equality offA offB lenA arrA arrB
       else False
 
+-- | There is not guaranteed to be a lexographic ordering.
+instance Ord Bytes where
+  compare (Bytes arr1 off1 len1) (Bytes arr2 off2 len2) =
+    BAW.compareLexographic off1 off2 len1 len2 arr1 arr2
+
 instance Show Bytes where
   show x = "pack " ++ show (unpack x)
 
@@ -79,6 +91,7 @@ instance Semigroup Bytes where
 instance Monoid Bytes where
   mempty = empty
   mappend = (SG.<>)
+  mconcat = concat
 
 cons :: Word8 -> Bytes -> Bytes
 cons w (Bytes arr off len) = runST $ do
@@ -88,6 +101,11 @@ cons w (Bytes arr off len) = runST $ do
   newArr <- PM.unsafeFreezeByteArray marr
   return (Bytes newArr 0 (len + 1))
 
+uncons :: Bytes -> Maybe (Word8, Bytes)
+uncons (Bytes arr off len) = if len > 0
+  then Just (PM.indexByteArray arr off, Bytes arr (off + 1) (len - 1))
+  else Nothing
+
 append :: Bytes -> Bytes -> Bytes
 append (Bytes arr1 off1 len1) (Bytes arr2 off2 len2) = runST $ do
   marr <- PM.newByteArray (len1 + len2)
@@ -95,6 +113,48 @@ append (Bytes arr1 off1 len1) (Bytes arr2 off2 len2) = runST $ do
   PM.copyByteArray marr len1 arr2 off2 len2
   arr <- PM.unsafeFreezeByteArray marr
   return (Bytes arr 0 (len1 + len2))
+
+-- | Concatenate a list of byte chunks into a single chunk.
+concat :: [Bytes] -> Bytes
+concat arrs = runST $ do
+  let len = sumLengths arrs 0
+  marr <- PM.newByteArray len
+  pasteBytesList marr 0 arrs
+  arr <- PM.unsafeFreezeByteArray marr
+  return (Bytes arr 0 len)
+
+-- | Concatenate a list of byte chunks into a single chunk. The
+-- order of the chunks is reversed. Note that:
+--
+-- > concatReversed ≡ concat . Data.List.reverse
+--
+-- But it performs better.
+concatReversed :: [Bytes] -> Bytes
+concatReversed arrs = runST $ do
+  let len = sumLengths arrs 0
+  marr <- PM.newByteArray len
+  pasteReversedBytesList marr len arrs
+  arr <- PM.unsafeFreezeByteArray marr
+  return (Bytes arr 0 len)
+
+sumLengths :: [Bytes] -> Int -> Int
+sumLengths = go
+  where
+  go [] !n = n
+  go (x : xs) !n = sumLengths xs (length x + n)
+
+pasteBytesList :: PM.MutableByteArray s -> Int -> [Bytes] -> ST s ()
+pasteBytesList !_ !_ [] = return ()
+pasteBytesList !marr !ix (Bytes arr off len : xs) = do
+  PM.copyByteArray marr ix arr off len
+  pasteBytesList marr (ix + len) xs
+
+pasteReversedBytesList :: PM.MutableByteArray s -> Int -> [Bytes] -> ST s ()
+pasteReversedBytesList !_ !_ [] = return ()
+pasteReversedBytesList !marr !ix (Bytes arr off len : xs) = do
+  let nextIx = ix - len
+  PM.copyByteArray marr nextIx arr off len
+  pasteBytesList marr nextIx xs
 
 null :: Bytes -> Bool
 null (Bytes _ _ len) = len < 1
@@ -138,9 +198,15 @@ foldl' :: (a -> Word8 -> a) -> a -> Bytes -> a
 foldl' f !acc0 (Bytes arr off len) = BAW.foldl' off len f acc0 arr
 
 take :: Int -> Bytes -> Bytes
-take !n (Bytes arr off len) = if n < len
-  then Bytes arr off (len - n)
-  else empty
+take !n b@(Bytes arr off len) = if n < len
+  then Bytes arr off n
+  else b
+
+unsafeTake :: Int -> Bytes -> Bytes
+unsafeTake !n (Bytes arr off len) = Bytes arr off n
+
+unsafeDrop :: Int -> Bytes -> Bytes
+unsafeDrop n (Bytes arr off len) = Bytes arr (off + n) (len - n)
 
 empty :: Bytes
 empty = Bytes BA.empty 0 0

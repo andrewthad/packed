@@ -63,7 +63,7 @@ parserVersion :: Parser HttpVersion
 parserVersion = http11 <$ Parser.bytes (s2b "HTTP/1.1")
 
 parserHeaders :: Parser (Array Header)
-parserHeaders = Parser.replicateUntilMember newlineSet parserHeader
+parserHeaders = Parser.replicateIntersperseMember nonNewlineSet parserHeader
 
 parserHeader :: Parser Header
 parserHeader = do
@@ -79,8 +79,8 @@ c2w = fromIntegral . Data.Char.ord
 s2b :: String -> Bytes
 s2b = B.pack . map c2w
 
-newlineSet :: ByteSet
-newlineSet = ByteSet.fromList (map c2w ['\r','\n'])
+nonNewlineSet :: ByteSet
+nonNewlineSet = ByteSet.invert (ByteSet.fromList (map c2w ['\r','\n']))
 
 expected :: Request
 expected = Request

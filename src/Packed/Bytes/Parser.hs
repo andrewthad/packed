@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE RankNTypes #-}
@@ -18,6 +19,7 @@
 module Packed.Bytes.Parser
   ( Parser(..)
   , ParserLevity(..)
+  , StatefulParser(..)
   , Result(..)
   , PureResult(..)
   , Leftovers(..)
@@ -49,7 +51,12 @@ module Packed.Bytes.Parser
   , foldIntersperseParserUntilEnd
   , foldIntersperseByte
   , replicate
+  , trie
   , failure
+    -- * Stateful
+  , statefully
+  , consumption
+  , mutation
     -- * ASCII
   , skipSpace
   , endOfLine
@@ -70,6 +77,7 @@ import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Small (ByteArray(..))
 import Packed.Bytes.Stream.ST (ByteStream(..))
 import Packed.Bytes.Set (ByteSet)
+import Packed.Bytes.Trie (Trie)
 import Data.Primitive (Array(..),MutableArray(..))
 import Control.Monad.ST (runST)
 import qualified Control.Monad
@@ -78,6 +86,7 @@ import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Set as ByteSet
+import qualified Packed.Bytes.Trie as Trie
 import qualified Data.Primitive as PM
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
@@ -151,6 +160,14 @@ newtype ParserLevity (r :: RuntimeRep) (a :: TYPE r) = ParserLevity
        Maybe# (Leftovers# s)
     -> State# s
     -> (# State# s, Result# s r a #)
+  }
+
+-- | A parser that can interleave arbitrary 'ST' effects with parsing.
+newtype StatefulParser s a = StatefulParser
+  { getStatefulParser ::
+       Maybe# (Leftovers# s)
+    -> State# s
+    -> (# State# s, Result# s 'LiftedRep a #)
   }
 
 bytesLength :: Bytes# -> Int
@@ -616,6 +633,35 @@ die :: String -> a
 die fun = error $ "Packed.Bytes.Parser." ++ fun
   ++ ": Implmentation error in this function. Please open a bug report."
 
+-- | This one is pretty cool. It takes a trie of parsers. It will consume
+-- input until one of two cases occur:
+--
+-- 1. It has fully matched a key from the trie. The parser corresponding
+--    to this key is then run.
+-- 2. It reaches a byte that is not part of a prefix of any key in the
+--    trie. The parser fails.
+--
+-- Like the other functions in this module, this implementation does not
+-- do any backtracking. This implementation detail means that a trie
+-- containing a key that is a prefix of another one of its keys will
+-- shadow the longer key. For example:
+--
+-- > Write Example
+--
+trie :: Trie (Parser a) -> Parser a
+trie (Trie.Trie node) = go node where
+  go :: Trie.Node c (Parser b) -> Parser b
+  go Trie.NodeEmpty = failure
+  go (Trie.NodeValueNil p) = p
+  go (Trie.NodeRun (Trie.Run arr n)) = do
+    bytes (B.fromByteArray arr)
+    go n
+  go (Trie.NodeBranch arr) = do
+    b <- any
+    go (PM.indexArray arr (word8ToInt b))
+  go (Trie.NodeValueRun p _) = p
+  go (Trie.NodeValueBranch p _) = p
+
 createArray
   :: Int
   -> a
@@ -676,12 +722,33 @@ skipSpace = Parser skipSpaceUnboxed
 decimalWord :: Parser Word
 decimalWord = Parser (boxWordParser decimalWordUnboxed)
 
+-- | Run a stateful parser.
+statefully :: (forall s. StatefulParser s a) -> Parser a
+statefully x = Parser (ParserLevity (case x of {StatefulParser f -> f}))
+
+-- | Lift a 'ST' action into a stateful parser.
+mutation :: ST s a -> StatefulParser s a
+mutation (ST f) = StatefulParser $ \leftovers0 s0 ->
+  case f s0 of
+    (# s1, a #) -> (# s1, (# leftovers0, (# | a #) #) #)
+
+-- | Lift a pure parser into a stateful parser.
+consumption :: Parser a -> StatefulParser s a
+consumption (Parser (ParserLevity f)) = StatefulParser f
+
 mapParser :: (a -> b) -> Parser a -> Parser b
 mapParser f p = bindLifted p (pureParser . f)
 
 pureParser :: a -> Parser a
 pureParser a = Parser $ ParserLevity $ \leftovers0 s0 ->
   (# s0, (# leftovers0, (# | a #) #) #)
+
+bindStateful :: StatefulParser s a -> (a -> StatefulParser s b) -> StatefulParser s b
+bindStateful (StatefulParser f) g = StatefulParser $ \leftovers0 s0 -> case f leftovers0 s0 of
+  (# s1, (# leftovers1, val #) #) -> case val of
+    (# (# #) | #) -> (# s1, (# leftovers1, (# (# #) | #) #) #)
+    (# | x #) -> case g x of
+      StatefulParser k -> k leftovers1 s1
 
 bindLifted :: Parser a -> (a -> Parser b) -> Parser b
 bindLifted (Parser (ParserLevity f)) g = Parser $ ParserLevity $ \leftovers0 s0 -> case f leftovers0 s0 of
@@ -766,3 +833,7 @@ endOfLine = do
 
 failure :: Parser a
 failure = Parser (ParserLevity (\m s -> (# s, (# m, (# (# #) | #) #) #)))
+
+word8ToInt :: Word8 -> Int
+word8ToInt = fromIntegral
+

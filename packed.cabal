@@ -35,6 +35,7 @@ library
     Packed.Bytes.Stream.ST
     Packed.Bytes.Stream.IO
     Packed.Bytes.Set
+    Packed.Bytes.Trie
     Packed.Text
     Packed.Text.Small
   default-language: Haskell2010

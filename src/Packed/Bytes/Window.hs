@@ -25,6 +25,7 @@ module Packed.Bytes.Window
   , zipOr
   , zipXor
   , equality
+  , compareLexographic
   , findMemberByte
   , findNonMemberByte
   , findNonDigit
@@ -317,12 +318,6 @@ safeIndex arr ix = if ix < 0 || ix >= PM.sizeofByteArray arr
   then error ("safeIndex: " ++ show ix ++ " is out of bounds")
   else PM.indexByteArray arr ix
 
--- TODO: optimize this. We could do a whole Word64 at a
--- time if the bytearray is pinned. Maybe even if it
--- isn't pinned.
--- reverse :: Int -> Int -> ByteArray -> ByteArray
--- reverse off len arr = runST
-
 -- | Check if the given slice of the two byte arrays
 --   is equal.
 equality :: 
@@ -334,15 +329,36 @@ equality ::
   -> Bool
 equality !ixA !ixB !len !arrA !arrB = go 0
   -- TODO: Replace this with compareByteArrays# once GHC 8.4
-  -- or GHC 8.6 is released. This will be simpler and much
-  -- faster.
+  -- is released. This will be simpler and much faster.
   where
   go :: Int -> Bool
   go !ix = if ix < len
-    then if safeIndex arrA (ix + ixA) == safeIndex arrB (ix + ixB)
+    then if unsafeIndex arrA (ix + ixA) == unsafeIndex arrB (ix + ixB)
       then go (ix + 1)
       else False
     else True
+
+-- | This is a lexographic comparison.
+compareLexographic :: 
+     Int -- ^ start x
+  -> Int -- ^ start y
+  -> Int -- ^ length x
+  -> Int -- ^ length y
+  -> ByteArray -- ^ array x
+  -> ByteArray -- ^ array y
+  -> Ordering
+compareLexographic !ixA !ixB !lenA !lenB !arrA !arrB = go 0
+  where
+  !len = min lenA lenB
+  go :: Int -> Ordering
+  go !ix = if ix < len
+    then
+      let !a = unsafeIndex arrA (ix + ixA)
+          !b = unsafeIndex arrB (ix + ixB)
+       in if a == b
+            then go (ix + 1)
+            else if a > b then GT else LT
+    else compare lenA lenB
 
 {-# INLINE zipVectorizable #-}
 zipVectorizable ::
