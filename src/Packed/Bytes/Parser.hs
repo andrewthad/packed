@@ -54,6 +54,7 @@ module Packed.Bytes.Parser
   , trie
   , trieReader
   , trieReaderState
+  , trieReaderState_
   , failure
     -- * Stateful
   , statefully
@@ -156,6 +157,17 @@ instance Applicative Parser where
 instance Monad Parser where
   return = pure
   (>>=) = bindLifted
+
+instance Functor (StatefulParser s) where
+  fmap = mapStatefulParser
+
+instance Applicative (StatefulParser s) where
+  pure = pureStatefulParser
+  (<*>) = Control.Monad.ap
+
+instance Monad (StatefulParser s) where
+  return = pure
+  (>>=) = bindStateful
 
 newtype ParserLevity (r :: RuntimeRep) (a :: TYPE r) = ParserLevity
   { getParserLevity :: forall s.
@@ -696,6 +708,23 @@ trieReaderState (Trie.Trie node) = go node where
   go (Trie.NodeValueRun p _) r s = p r s
   go (Trie.NodeValueBranch p _) r s = p r s
 
+-- | Variant of 'trie' whose parsers modify state and accept an environment.
+-- This variant lacks a result type. It only modifies the state.
+trieReaderState_ :: Trie (r -> s -> Parser s) -> r -> s -> Parser s
+trieReaderState_ (Trie.Trie node) = go node where
+  go :: forall c r' s'. Trie.Node c (r' -> s' -> Parser s') -> r' -> s' -> Parser s'
+  go Trie.NodeEmpty _ _ = failure
+  go (Trie.NodeValueNil p) r s = p r s
+  go (Trie.NodeRun (Trie.Run arr n)) r s = do
+    bytes (B.fromByteArray arr)
+    go n r s
+  go (Trie.NodeBranch arr) r s = do
+    b <- any
+    go (PM.indexArray arr (word8ToInt b)) r s
+  go (Trie.NodeValueRun p _) r s = p r s
+  go (Trie.NodeValueBranch p _) r s = p r s
+
+
 createArray
   :: Int
   -> a
@@ -770,11 +799,20 @@ mutation (ST f) = StatefulParser $ \leftovers0 s0 ->
 consumption :: Parser a -> StatefulParser s a
 consumption (Parser (ParserLevity f)) = StatefulParser f
 
+-- TODO: improve this
 mapParser :: (a -> b) -> Parser a -> Parser b
 mapParser f p = bindLifted p (pureParser . f)
 
 pureParser :: a -> Parser a
 pureParser a = Parser $ ParserLevity $ \leftovers0 s0 ->
+  (# s0, (# leftovers0, (# | a #) #) #)
+
+-- TODO: improve this
+mapStatefulParser :: (a -> b) -> StatefulParser s a -> StatefulParser s b
+mapStatefulParser f p = bindStateful p (pureStatefulParser . f)
+
+pureStatefulParser :: a -> StatefulParser s a
+pureStatefulParser a = StatefulParser $ \leftovers0 s0 ->
   (# s0, (# leftovers0, (# | a #) #) #)
 
 bindStateful :: StatefulParser s a -> (a -> StatefulParser s b) -> StatefulParser s b
