@@ -66,33 +66,36 @@ module Packed.Bytes.Parser
   , takeBytesUntilEndOfLineConsume
   ) where
 
-import Prelude hiding (any,replicate)
 import Control.Applicative
+import Control.Monad.ST (runST)
+import Data.Primitive (Array(..),MutableArray(..))
+import Data.Semigroup (Semigroup)
 import GHC.Int (Int(I#))
+import GHC.ST (ST(..))
+import GHC.Types (TYPE,RuntimeRep(..),IO(..))
+import GHC.Word (Word(W#),Word8(W8#))
+import Packed.Bytes (Bytes(..))
+import Packed.Bytes.Set (ByteSet)
+import Packed.Bytes.Small (ByteArray(..))
+import Packed.Bytes.Stream.ST (ByteStream(..))
+import Packed.Bytes.Trie (Trie)
+import Prelude hiding (any,replicate)
+
+import qualified Control.Monad
+import qualified Data.Primitive as PM
+import qualified Data.Semigroup as SG
+import qualified Packed.Bytes as B
+import qualified Packed.Bytes.Set as ByteSet
+import qualified Packed.Bytes.Small as BA
+import qualified Packed.Bytes.Stream.ST as Stream
+import qualified Packed.Bytes.Trie as Trie
+import qualified Packed.Bytes.Window as BAW
+
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),(<#),
   MutableArray#,writeArray#,unsafeFreezeArray#,newArray#,
   unsafeFreezeByteArray#,newByteArray#,runRW#,
   plusWord#,timesWord#,indexWord8Array#,eqWord#,fromListN,
   RealWorld)
-import GHC.Types (TYPE,RuntimeRep(..),IO(..))
-import GHC.Word (Word(W#),Word8(W8#))
-import GHC.ST (ST(..))
-import Packed.Bytes (Bytes(..))
-import Packed.Bytes.Small (ByteArray(..))
-import Packed.Bytes.Stream.ST (ByteStream(..))
-import Packed.Bytes.Set (ByteSet)
-import Packed.Bytes.Trie (Trie)
-import Data.Primitive (Array(..),MutableArray(..))
-import Control.Monad.ST (runST)
-import qualified Data.Semigroup as SG
-import qualified Control.Monad
-import qualified Packed.Bytes.Small as BA
-import qualified Packed.Bytes.Stream.ST as Stream
-import qualified Packed.Bytes.Window as BAW
-import qualified Packed.Bytes as B
-import qualified Packed.Bytes.Set as ByteSet
-import qualified Packed.Bytes.Trie as Trie
-import qualified Data.Primitive as PM
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
 type Maybe# (a :: TYPE r) = (# (# #) | a #)
