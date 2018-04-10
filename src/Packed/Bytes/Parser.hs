@@ -52,6 +52,7 @@ module Packed.Bytes.Parser
   , foldIntersperseByte
   , replicate
   , trie
+  , trieReader
   , failure
     -- * Stateful
   , statefully
@@ -661,6 +662,23 @@ trie (Trie.Trie node) = go node where
     go (PM.indexArray arr (word8ToInt b))
   go (Trie.NodeValueRun p _) = p
   go (Trie.NodeValueBranch p _) = p
+
+-- | Variant of 'trie' whose parsers accept an environment. This is helpful
+-- in situation where the user needs to ensure that the 'Trie' used by
+-- the parser is a CAF.
+trieReader :: Trie (r -> Parser a) -> r -> Parser a
+trieReader (Trie.Trie node) = go node where
+  go :: forall c b t. Trie.Node c (t -> Parser b) -> t -> Parser b
+  go Trie.NodeEmpty _ = failure
+  go (Trie.NodeValueNil p) r = p r
+  go (Trie.NodeRun (Trie.Run arr n)) r = do
+    bytes (B.fromByteArray arr)
+    go n r
+  go (Trie.NodeBranch arr) r = do
+    b <- any
+    go (PM.indexArray arr (word8ToInt b)) r
+  go (Trie.NodeValueRun p _) r = p r
+  go (Trie.NodeValueBranch p _) r = p r
 
 createArray
   :: Int
