@@ -31,6 +31,8 @@ module Packed.Bytes
   , findByte
   , hash
   , hashWith
+    -- * Folds
+  , foldr
     -- * Unsliced Byte Arrays
   , toByteArray
   , fromByteArray
@@ -44,7 +46,7 @@ module Packed.Bytes
   , unsafeDrop
   ) where
 
-import Prelude hiding (take,length,replicate,drop,null,concat)
+import Prelude hiding (take,length,replicate,drop,null,concat,foldr)
 
 import Packed.Bytes.Small (ByteArray(..))
 import Data.Monoid (Monoid(..))
@@ -311,4 +313,7 @@ dwindle# b@(# _,_,len #) = case len ># 0# of
 
 unboxByteArray :: ByteArray -> ByteArray#
 unboxByteArray (ByteArray arr) = arr
+
+foldr :: (Word8 -> a -> a) -> a -> Bytes -> a
+foldr f a (Bytes arr off len) = BAW.foldr off len f a arr
 

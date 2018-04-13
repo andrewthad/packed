@@ -30,6 +30,8 @@ module Packed.Bytes.Window
   , findNonMemberByte
   , findNonDigit
   , stripPrefixResumable
+    -- * Folds
+  , foldr
     -- * Hashing
   , hash
   , hashWith
@@ -41,6 +43,8 @@ module Packed.Bytes.Window
   , findNonAscii'
   , findNonAsciiSpace'
   ) where
+
+import Prelude hiding (foldr)
 
 import Data.Primitive (ByteArray(ByteArray))
 import Data.Word (Word8)
@@ -73,6 +77,19 @@ unboxInt (I# i) = i
 
 unboxWord :: Word -> Word#
 unboxWord (W# i) = i
+
+foldr ::
+     Int
+  -> Int
+  -> (Word8 -> a -> a)
+  -> a
+  -> ByteArray
+  -> a
+foldr off0 len f a0 arr = go off0 where
+  !end = off0 + len
+  go !ix = if ix < end
+    then f (unsafeIndex arr ix) (go (ix + 1))
+    else a0
 
 slice ::
      Int
@@ -313,11 +330,6 @@ safeIndexWord arr ix = if ix < 0 || ix >= (div (PM.sizeofByteArray arr) (PM.size
 unsafeIndex :: ByteArray -> Int -> Word8
 unsafeIndex = PM.indexByteArray
 
-safeIndex :: ByteArray -> Int -> Word8
-safeIndex arr ix = if ix < 0 || ix >= PM.sizeofByteArray arr
-  then error ("safeIndex: " ++ show ix ++ " is out of bounds")
-  else PM.indexByteArray arr ix
-
 -- | Check if the given slice of the two byte arrays
 --   is equal.
 equality :: 
@@ -467,7 +479,7 @@ findVectorizable predicate predicateMach !start !len !arr =
   where
   go :: Int -> Int -> Maybe# Int#
   go !ix !end = if ix < end
-    then case predicate (safeIndex arr ix) of
+    then case predicate (unsafeIndex arr ix) of
       False -> go (ix + 1) end
       True -> (# | unboxInt ix #)
     else (# (# #) | #)
@@ -589,19 +601,19 @@ postAsciiIsUtf8 !start !len !arr = go start binaryOneThenZeroes
      -> (# Word#, (# Int# | (# #) | (# Word#, Word#, Word# #) #) #)
   go !ix !hasSurrogate = if ix < end
     then
-      let !firstByte = safeIndex arr ix in
+      let !firstByte = unsafeIndex arr ix in
        if | oneByteChar firstByte -> go (ix + 1) hasSurrogate
           | twoByteChar firstByte -> if ix + 1 < end
-              then if followingByte (safeIndex arr (ix + 1))
+              then if followingByte (unsafeIndex arr (ix + 1))
                 then go (ix + 2) hasSurrogate
                 else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
               else (# unboxWord hasSurrogate, (# | | (# 2##, 1##, unboxWord (byteTwoPartialOne firstByte) #) #) #)
           | threeByteChar firstByte ->
               if | ix + 2 < end -> 
-                     let !secondByte = safeIndex arr (ix + 1) in
+                     let !secondByte = unsafeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then 
-                         let !thirdByte = safeIndex arr (ix + 2) in
+                         let !thirdByte = unsafeIndex arr (ix + 2) in
                          if followingByte thirdByte
                            then if surrogate (codepointFromThreeBytes firstByte secondByte thirdByte)
                              then go (ix + 3) 1
@@ -609,36 +621,36 @@ postAsciiIsUtf8 !start !len !arr = go start binaryOneThenZeroes
                            else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                        else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 1 < end -> 
-                     let !secondByte = safeIndex arr (ix + 1) in
+                     let !secondByte = unsafeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then (# unboxWord hasSurrogate, (# | | (# 3##, 1##, unboxWord (byteThreePartialTwo firstByte secondByte) #) #) #)
                        else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | otherwise -> (# unboxWord hasSurrogate, (# | | (# 3##, 2##, unboxWord (byteThreePartialOne firstByte) #) #) #)
           | fourByteChar firstByte ->
               if | ix + 3 < end ->
-                     let !secondByte = safeIndex arr (ix + 1) in
+                     let !secondByte = unsafeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then 
-                         let !thirdByte = safeIndex arr (ix + 2) in
+                         let !thirdByte = unsafeIndex arr (ix + 2) in
                          if followingByte thirdByte
                            then
-                             let !fourthByte = safeIndex arr (ix + 3) in
+                             let !fourthByte = unsafeIndex arr (ix + 3) in
                              if followingByte fourthByte
                                then go (ix + 4) hasSurrogate
                                else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                            else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                        else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 2 < end -> 
-                     let !secondByte = safeIndex arr (ix + 1) in
+                     let !secondByte = unsafeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then 
-                         let !thirdByte = safeIndex arr (ix + 2) in
+                         let !thirdByte = unsafeIndex arr (ix + 2) in
                          if followingByte thirdByte
                            then (# unboxWord hasSurrogate, (# | | (# 4##, 1##, unboxWord (byteFourPartialThree firstByte secondByte thirdByte) #) #) #)
                            else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                        else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)
                  | ix + 1 < end -> 
-                     let !secondByte = safeIndex arr (ix + 1) in
+                     let !secondByte = unsafeIndex arr (ix + 1) in
                      if followingByte secondByte
                        then (# unboxWord hasSurrogate, (# | | (# 4##, 2##, unboxWord (byteFourPartialTwo firstByte secondByte) #) #) #)
                        else (# unboxWord hasSurrogate, (# unboxInt ix | | #) #)

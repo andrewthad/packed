@@ -287,7 +287,3 @@ fromListWith combine = construct combine (\f xs d -> case xs of
     (b,v) : ys -> f b v ys d
   )
 
-
-
--- lookup :: Bytes -> BytesTable -> 
-

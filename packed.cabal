@@ -43,8 +43,12 @@ library
 test-suite test
   type: exitcode-stdio-1.0
   main-is: Main.hs
+  ghc-options: -rtsopts -threaded
   other-modules:
+    Parser
     Parser.Http.Request
+    Data.Trie.Naive
+    MinimalTrieParser
   hs-source-dirs:
       test
     , common

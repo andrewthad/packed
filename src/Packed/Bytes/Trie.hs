@@ -1,10 +1,13 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UnboxedTuples #-}
 
@@ -17,28 +20,37 @@ module Packed.Bytes.Trie
   , singleton
   , toList
   , fromList
+  , fromListAppend
   , lookup
   -- * Internal
   , valid
   ) where
 
 import Prelude hiding (lookup)
-import Data.Kind (Type)
-import Data.Semigroup (Semigroup)
-import Data.Primitive hiding (fromList)
-import Data.Word (Word8)
+
 import Control.Monad.ST (runST)
-import Unsafe.Coerce (unsafeCoerce)
+import Data.Bifunctor (second)
+import Data.Kind (Type)
+import Data.Primitive hiding (fromList)
 import Data.Proxy (Proxy(..))
+import Data.Semigroup (Semigroup,First(..))
+import Data.Word (Word8)
 import GHC.Exts (Int(I#),indexArray#,int2Word#)
 import GHC.Word (Word8(W8#))
 import Packed.Bytes (Bytes)
+import Unsafe.Coerce (unsafeCoerce)
+
 import qualified Data.Semigroup as SG
+import qualified GHC.Exts as Exts
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Small as BA
 
+debugMode :: Bool
+debugMode = True
+
 -- | A trie for a sequence of bytes.
 newtype Trie a = Trie (Node 'ChildBranch a)
+  deriving (Functor)
 
 instance Eq a => Eq (Trie a) where
   Trie x == Trie y = eqNode x y
@@ -63,6 +75,21 @@ data Node :: Child -> Type -> Type where
   NodeValueRun :: !a -> {-# UNPACK #-} !(Run a) -> Node c a
   NodeEmpty :: Node 'ChildBranch a
 
+-- todo: replace this with DeriveFunctor when primitive fixes
+-- the Functor instance for array in primitive-0.6.4.0
+instance Functor (Node c) where
+  fmap f x = case x of
+    NodeBranch a -> NodeBranch (mapArrayInternal (fmap f) a)
+    NodeValueBranch v a -> NodeValueBranch (f v) (mapArrayInternal (fmap f) a)
+    NodeRun r -> NodeRun (fmap f r)
+    NodeValueRun v r -> NodeValueRun (f v) (fmap f r)
+    NodeEmpty -> NodeEmpty
+    NodeValueNil v -> NodeValueNil (f v)
+
+-- todo: get rid of this when primitive 0.6.4.0 is released
+mapArrayInternal :: (a -> b) -> Array a -> Array b
+mapArrayInternal f = Exts.fromList . map f . Exts.toList
+
 eqNode :: Eq a => Node c a -> Node d a -> Bool
 eqNode = go where
   go :: Eq b => Node e b -> Node f b -> Bool
@@ -74,6 +101,7 @@ eqNode = go where
   go NodeEmpty NodeEmpty = True
   go _ _ = False
 
+-- todo: remove this once primitive-0.6.4.0 is released
 arrayLiftEqInternal :: (a -> b -> Bool) -> Array a -> Array b -> Bool
 arrayLiftEqInternal p a1 a2 = sizeofArray a1 == sizeofArray a2 && loop (sizeofArray a1 - 1)
   where
@@ -91,16 +119,20 @@ eqRun (Run arr1 n1) (Run arr2 n2) = arr1 == arr2 && eqNode n1 n2
 data Run a = Run
   {-# UNPACK #-} !ByteArray -- invariant: byte array is non empty
   !(Node 'ChildRun a)
+  deriving (Functor)
 
 -- Anything that can be a child of run can be a child of
 -- branch, so this is safe. This could be written without
 -- unsafeCoerce, but I think this approach allows more
 -- sharing.
 coerceNode :: Node c a -> Node 'ChildBranch a
-coerceNode = unsafeCoerce
-
-coerceNodeAdd :: forall (c :: Child) (d :: Child) a. Proxy c -> Node d a -> Node (AddChild c d) a
-coerceNodeAdd _ = unsafeCoerce
+-- coerceNode = unsafeCoerce
+coerceNode (NodeRun r) = NodeRun r
+coerceNode (NodeBranch r) = NodeBranch r
+coerceNode (NodeValueNil r) = NodeValueNil r
+coerceNode (NodeValueBranch v b) = NodeValueBranch v b
+coerceNode (NodeValueRun v b) = NodeValueRun v b
+coerceNode NodeEmpty = NodeEmpty
 
 append :: Semigroup a => Trie a -> Trie a -> Trie a
 append (Trie x) (Trie y) = Trie (appendNode x y)
@@ -146,7 +178,7 @@ appendNode = go where
   go (NodeValueNil v1) (NodeValueBranch v2 y) = NodeValueBranch (v1 SG.<> v2) y
   go (NodeValueNil v1) (NodeValueRun v2 y) = NodeValueRun (v1 SG.<> v2) y
   go (NodeValueNil x) (NodeValueNil y) = NodeValueNil (x SG.<> y)
-  go NodeEmpty n = coerceNodeAdd (Proxy :: Proxy e) n
+  go NodeEmpty n = coerceNode n 
 
 prependRun :: Semigroup a => Run a -> Node 'ChildRun a -> Node 'ChildRun a
 prependRun !r1 !x = case x of
@@ -183,32 +215,46 @@ intToWord8 (I# i) = W8# (int2Word# i)
 
 -- precondition: size is greater than 1
 tailByteArray :: ByteArray -> ByteArray
-tailByteArray !arr = runST $ do
-  let sz = sizeofByteArray arr - 1
-  m <- newByteArray sz
-  copyByteArray m 0 arr 1 sz
-  unsafeFreezeByteArray m
+tailByteArray !arr = if debugMode && sizeofByteArray arr < 2
+  then die "tailByteArray"
+  else runST $ do
+    let sz = sizeofByteArray arr - 1
+    m <- newByteArray sz
+    copyByteArray m 0 arr 1 sz
+    unsafeFreezeByteArray m
 
--- precondition: size is greater than 1
+-- Precondition: size is greater than 1. Yes, that is meant to
+-- be 1 and not zero. This function is only ever used in
+-- contexts where it is expected that the result has at least
+-- one byte in it.
 initByteArray :: ByteArray -> ByteArray
-initByteArray !arr = runST $ do
-  let sz = sizeofByteArray arr - 1
-  m <- newByteArray sz
-  copyByteArray m 0 arr 0 sz
-  unsafeFreezeByteArray m
+initByteArray !arr = if debugMode && sizeofByteArray arr < 2
+  then die "initByteArray"
+  else runST $ do
+    let sz = sizeofByteArray arr - 1
+    m <- newByteArray sz
+    copyByteArray m 0 arr 0 sz
+    unsafeFreezeByteArray m
 
 dropByteArray :: Int -> ByteArray -> ByteArray
-dropByteArray !n !arr = runST $ do
-  let sz = sizeofByteArray arr - n
-  m <- newByteArray sz
-  copyByteArray m 0 arr n sz
-  unsafeFreezeByteArray m
+dropByteArray !n !arr = if debugMode && n > sizeofByteArray arr
+  then die "dropByteArray"
+  else runST $ do
+    let sz = sizeofByteArray arr - n
+    m <- newByteArray sz
+    copyByteArray m 0 arr n sz
+    unsafeFreezeByteArray m
 
 takeByteArray :: Int -> ByteArray -> ByteArray
-takeByteArray !n !arr = runST $ do
-  m <- newByteArray n
-  copyByteArray m 0 arr 0 n
-  unsafeFreezeByteArray m
+takeByteArray !n !arr = if debugMode && n > sizeofByteArray arr
+  then die "takeByteArray"
+  else runST $ do
+    m <- newByteArray n
+    copyByteArray m 0 arr 0 n
+    unsafeFreezeByteArray m
+
+die :: String -> a
+die func = error ("Packed.Bytes.Trie." ++ func ++ ": invariant violated")
 
 firstDifferentByte :: ByteArray -> ByteArray -> Int
 firstDifferentByte a b = go 0
@@ -347,8 +393,11 @@ ifoldMapArray f arr = go 0 where
     then mappend (f ix (indexArray arr ix)) (go (ix + 1))
     else mempty
 
-fromList :: Semigroup a => [(Bytes,a)] -> Trie a
-fromList = foldMap (uncurry singleton)
+fromList :: [(Bytes,a)] -> Trie a
+fromList = fmap getFirst . fromListAppend . map (second First) 
+
+fromListAppend :: Semigroup a => [(Bytes,a)] -> Trie a
+fromListAppend = foldMap (uncurry singleton)
 
 lookup :: Bytes -> Trie a -> Maybe a
 lookup b0 (Trie node) = go b0 node where
