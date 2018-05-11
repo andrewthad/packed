@@ -54,7 +54,7 @@ module Packed.Bytes.Parser
   , trie
   , triePure
   , trieReader
-  , trieReaderState
+  -- , trieReaderState
   , trieReaderState_
   , failure
     -- * Stateful

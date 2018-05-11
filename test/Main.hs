@@ -83,11 +83,7 @@ tests = testGroup "Tests"
         , testProperty "http-request" Parser.byteParserHttpRequest
         ]
       , testGroup "Trie"
-        [ testGroup "snmptrapd"
-          -- [ testProperty "implementation" Parser.byteParserTrieSnmp
-          [ testProperty "naive" Parser.byteParserTrieSnmpNaive
-          , testProperty "contained" Parser.byteParserTrieContained
-          ]
+        [ testProperty "snmptrapd" Parser.byteParserTrieSnmp
         , testProperty "numbers" Parser.byteParserTrieNumbers
         ]
       ]

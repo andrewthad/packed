@@ -16,8 +16,6 @@ module Parser
   , byteParserEolAccept
   , byteParserEolReject
   , byteParserTrieSnmp
-  , byteParserTrieSnmpNaive
-  , byteParserTrieContained
   , byteParserTrieNumbers
   ) where
 
@@ -25,7 +23,7 @@ import Control.Applicative
 import Control.Monad.ST (ST,runST)
 import Data.Primitive (Array)
 import Data.Word (Word8)
-import GHC.Exts (fromList)
+import GHC.Exts (fromList,unsafeCoerce#)
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
 import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
 import Hedgehog.Range (Range,linear)
@@ -135,15 +133,11 @@ byteParserArtificalDelta = property $ do
 byteParserTrieSnmp :: Property
 byteParserTrieSnmp = property $ do
   let sample = "STRING: _55_ INTEGER: 12 OID: 13,16 Timeticks: Hello "
-  -- let sample = "STRING: _55_ "
   elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
   let strChunks = LS.chunksOf elementsPerChunk sample
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
-      -- expected = 55
-      -- expected = fromList [55] :: Array Word
       expected = fromList [55, 12, 29, 6] :: Array Word
-      -- (r,mextra) = runExampleParser (P.trie snmptradp <* P.endOfInput) stream
       (r,mextra) = runExampleParser (P.replicateUntilEnd (P.trie snmptrapd)) stream
   Nothing === mextra
   Just expected === r
@@ -151,19 +145,12 @@ byteParserTrieSnmp = property $ do
 snmptrapd :: Trie.Trie (Parser Word)
 snmptrapd = Trie.fromList snmptradpPairs
 
-snmptrapdNaive :: Naive.Trie (Parser Word)
-snmptrapdNaive = -- Naive.fromList snmptradpPairs
-  Naive.fromStringList
-    [ ("STRING: ", P.decimalDigitWord <* P.byte (c2w ' '))
-    ]
-
 snmptradpPairs :: [(Bytes,Parser Word)]
 snmptradpPairs =
-  [ (s2b "STRING: ", P.decimalDigitWord <* P.byte (c2w ' '))
-  -- [ (s2b "STRING: ", P.byte (c2w '_') *> P.decimalWord <* P.byte (c2w '_') <* P.byte (c2w ' '))
-  -- , (s2b "INTEGER: ", P.decimalWord <* P.skipSpace)
-  -- , (s2b "OID: ", liftA2 (+) (P.decimalWord <* P.byte (c2w ',')) P.decimalWord <* P.skipSpace)
-  -- , (s2b "Timeticks: ", 6 <$ P.skipUntilByteConsume (c2w ' '))
+  [ (s2b "STRING: ", P.byte (c2w '_') *> P.decimalWord <* P.byte (c2w '_') <* P.byte (c2w ' '))
+  , (s2b "INTEGER: ", P.decimalWord <* P.skipSpace)
+  , (s2b "OID: ", liftA2 (+) (P.decimalWord <* P.byte (c2w ',')) P.decimalWord <* P.skipSpace)
+  , (s2b "Timeticks: ", 6 <$ P.skipUntilByteConsume (c2w ' '))
   ]
 
 {-# NOINLINE altMap #-}
@@ -180,26 +167,6 @@ useMap = do
   case M.lookup w altMap of
     Nothing -> P.failure
     Just (x,p) -> P.bytes x >> p
-
-byteParserTrieContained :: Property
-byteParserTrieContained = property $ do
-  MTP.replicateParse 100000 === 1
-
-byteParserTrieSnmpNaive :: Property
-byteParserTrieSnmpNaive = property $ do
-  let sample = "STRING: _6_ INTEGER: 12 OID: 13,16 Timeticks: Hello "
-  -- let sample = "Strauss55 "
-  -- elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
-  -- let strChunks = LS.chunksOf elementsPerChunk sample
-  --     chunks = map (B.pack . map charToWord8) strChunks
-  --     stream = foldMap Stream.fromBytes chunks
-      stream = Stream.fromBytes (s2b sample)
-      expected = 6 -- fromList [55, 12, 29, 6] :: Array Word
-      -- (r,mextra) = runExampleParser P.decimalWord stream
-      -- (r,mextra) = runExampleParser (useMap <* P.endOfInput) stream
-      (r,mextra) = runExampleParser (Naive.parser snmptrapdNaive <* P.endOfInput) stream
-  Nothing === mextra
-  Just expected === r
 
 byteParserTrieNumbers :: Property
 byteParserTrieNumbers = property $ do

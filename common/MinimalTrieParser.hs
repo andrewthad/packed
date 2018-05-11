@@ -8,7 +8,7 @@
 {-# LANGUAGE UnboxedSums #-}
 {-# LANGUAGE UnboxedTuples #-}
 
--- {-# OPTIONS_GHC -O2 #-}
+{-# OPTIONS_GHC -O2 #-}
 
 module MinimalTrieParser
   ( replicateParse
@@ -39,9 +39,19 @@ replicateFunction !n f !a = if n > 0
   else a
 
 step :: Word -> Word
-step !w = runST $ do
-  Result _ r <- executeParser (streamFromBytes (s2b "STRING: 120!")) myParser
-  return (maybe 0 (+w) r)
+step !w =
+  let (mres, mleftovers) = runParser myParser (streamFromBytes (s2b ("STRING: " ++ show w ++ "!")))
+   in if mleftovers == Nothing then maybe 0 (+w) mres else 5
+
+runParser :: Parser a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runParser parser stream = runST $ do
+  Result mleftovers r <- executeParser stream parser
+  mextra <- case mleftovers of
+    Nothing -> return Nothing
+    Just (Leftovers chunk remainingStream) -> do
+      bs <- unpackStream remainingStream
+      return (Just (map w2c (unpackBytes chunk ++ bs)))
+  return (r,mextra)
 
 myParser :: Parser Word
 myParser = trieToParser $ trieFromList
@@ -255,6 +265,9 @@ c2w = fromIntegral . Data.Char.ord
 s2b :: String -> Bytes
 s2b = packBytes . map c2w
 
+w2c :: Word8 -> Char
+w2c = Data.Char.chr . fromIntegral
+
 packBytes :: [Word8] -> Bytes
 packBytes ws0 = runST $ do
   marr <- newByteArray (L.length ws0)
@@ -336,4 +349,22 @@ trieToParser (Trie mp m) = case mp of
     case M.lookup w m of
       Nothing -> failureParser
       Just t -> trieToParser t
+
+unpackBytes :: Bytes -> [Word8]
+unpackBytes (Bytes arr off len) = go off
+  where
+  go :: Int -> [Word8]
+  go !ix = if ix < len + off
+    then indexByteArray arr ix : go (ix + 1)
+    else []
+
+unpackStreamInternal :: ByteStream s -> State# s -> (# State# s, [Word8] #)
+unpackStreamInternal (ByteStream f) s0 = case f s0 of
+  (# s1, r #) -> case r of
+    (# (# #) | #) -> (# s1, [] #)
+    (# | (# bytes, stream #) #) -> case unpackStreamInternal stream s1 of
+      (# s2, ws #) -> (# s2, unpackBytes (boxBytes bytes) ++ ws #)
+
+unpackStream :: ByteStream s -> ST s [Word8]
+unpackStream stream = ST (unpackStreamInternal stream)
 
