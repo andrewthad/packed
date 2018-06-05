@@ -32,21 +32,18 @@ import Control.Monad.ST (runST)
 import Data.Bifunctor (second)
 import Data.Kind (Type)
 import Data.Primitive hiding (fromList)
-import Data.Proxy (Proxy(..))
 import Data.Semigroup (Semigroup,First(..))
 import Data.Word (Word8)
-import GHC.Exts (Int(I#),indexArray#,int2Word#)
+import GHC.Exts (Int(I#),int2Word#)
 import GHC.Word (Word8(W8#))
 import Packed.Bytes (Bytes)
-import Unsafe.Coerce (unsafeCoerce)
 
 import qualified Data.Semigroup as SG
-import qualified GHC.Exts as Exts
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Small as BA
 
 debugMode :: Bool
-debugMode = True
+debugMode = False
 
 -- | A trie for a sequence of bytes.
 newtype Trie a = Trie (Node 'ChildBranch a)
@@ -75,58 +72,31 @@ data Node :: Child -> Type -> Type where
   NodeValueRun :: !a -> {-# UNPACK #-} !(Run a) -> Node c a
   NodeEmpty :: Node 'ChildBranch a
 
--- todo: replace this with DeriveFunctor when primitive fixes
--- the Functor instance for array in primitive-0.6.4.0
-instance Functor (Node c) where
-  fmap f x = case x of
-    NodeBranch a -> NodeBranch (mapArrayInternal (fmap f) a)
-    NodeValueBranch v a -> NodeValueBranch (f v) (mapArrayInternal (fmap f) a)
-    NodeRun r -> NodeRun (fmap f r)
-    NodeValueRun v r -> NodeValueRun (f v) (fmap f r)
-    NodeEmpty -> NodeEmpty
-    NodeValueNil v -> NodeValueNil (f v)
+deriving instance Functor (Node c)
 
--- todo: get rid of this when primitive 0.6.4.0 is released
-mapArrayInternal :: (a -> b) -> Array a -> Array b
-mapArrayInternal f = Exts.fromList . map f . Exts.toList
+instance Eq a => Eq (Node c a) where
+  (==) = eqNode
 
-eqNode :: Eq a => Node c a -> Node d a -> Bool
+eqNode :: Eq a => Node c a -> Node c a -> Bool
 eqNode = go where
   go :: Eq b => Node e b -> Node f b -> Bool
-  go (NodeBranch x) (NodeBranch y) = arrayLiftEqInternal eqNode x y
-  go (NodeRun x) (NodeRun y) = eqRun x y
+  go (NodeBranch x) (NodeBranch y) = x == y
+  go (NodeRun x) (NodeRun y) = x == y
   go (NodeValueNil x) (NodeValueNil y) = x == y
-  go (NodeValueBranch v1 b1) (NodeValueBranch v2 b2) = v1 == v2 && arrayLiftEqInternal eqNode b1 b2
-  go (NodeValueRun v1 r1) (NodeValueRun v2 r2) = v1 == v2 && eqRun r1 r2
+  go (NodeValueBranch v1 b1) (NodeValueBranch v2 b2) = v1 == v2 && b1 == b2
+  go (NodeValueRun v1 r1) (NodeValueRun v2 r2) = v1 == v2 && r1 == r2
   go NodeEmpty NodeEmpty = True
   go _ _ = False
-
--- todo: remove this once primitive-0.6.4.0 is released
-arrayLiftEqInternal :: (a -> b -> Bool) -> Array a -> Array b -> Bool
-arrayLiftEqInternal p a1 a2 = sizeofArray a1 == sizeofArray a2 && loop (sizeofArray a1 - 1)
-  where
-  loop i | i < 0     = True
-         | (# x1 #) <- indexArrayInternal a1 i
-         , (# x2 #) <- indexArrayInternal a2 i
-         , otherwise = p x1 x2 && loop (i-1)
-
-indexArrayInternal :: Array a -> Int -> (# a #)
-indexArrayInternal arr (I# i) = indexArray# (array# arr) i
-
-eqRun :: Eq a => Run a -> Run a -> Bool
-eqRun (Run arr1 n1) (Run arr2 n2) = arr1 == arr2 && eqNode n1 n2
 
 data Run a = Run
   {-# UNPACK #-} !ByteArray -- invariant: byte array is non empty
   !(Node 'ChildRun a)
-  deriving (Functor)
+  deriving (Functor,Eq)
 
 -- Anything that can be a child of run can be a child of
--- branch, so this is safe. This could be written without
--- unsafeCoerce, but I think this approach allows more
--- sharing.
+-- branch, so this is safe. This could be written with
+-- unsafeCoerce instead.
 coerceNode :: Node c a -> Node 'ChildBranch a
--- coerceNode = unsafeCoerce
 coerceNode (NodeRun r) = NodeRun r
 coerceNode (NodeBranch r) = NodeBranch r
 coerceNode (NodeValueNil r) = NodeValueNil r
@@ -444,7 +414,6 @@ instance Semigroup a => Semigroup (Trie a) where
 
 instance Semigroup a => Monoid (Trie a) where
   mempty = empty
-  mappend = (SG.<>)
 
 -- | Internal function for testing that invariants of the trie
 -- are satisfied. 
