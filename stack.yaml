@@ -1,6 +1,7 @@
-resolver: lts-11.1
+resolver: nightly-2018-06-07
 packages:
 - .
 extra-deps:
 - 'tasty-1.0.1'
 - 'gauge-0.2.1'
+- 'primitive-0.6.4.0'
