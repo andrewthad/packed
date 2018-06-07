@@ -26,7 +26,7 @@ library
     , ghc-prim >= 0.5.0 && < 0.6
     , primitive >= 0.6.4 && < 0.7
   if impl(ghc < 8.4.3)
-    build-depends: invalid-cabal-flag-settings < 0
+    build-depends: base < 0
   exposed-modules:
     Packed.Bytes
     Packed.Bytes.Window
