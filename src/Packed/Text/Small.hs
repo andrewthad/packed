@@ -22,13 +22,14 @@ import Prelude hiding (reverse)
 import Packed.Bytes.Small (ByteArray)
 import Data.Bits ((.&.))
 import Data.Semigroup (Semigroup)
+import Data.Primitive (PrimUnlifted)
 import qualified Packed.Bytes.Small as BA
 import qualified Data.Semigroup as SG
 import qualified Data.Primitive as PM
 import qualified Packed.Bytes.Window as BAW
 
 newtype SmallText = SmallText ByteArray 
-  deriving (Eq,Semigroup,Monoid)
+  deriving (Eq,Semigroup,Monoid,PrimUnlifted)
 
 -- Text is UTF-8 encoded. Unlike the type used for sliced text,
 -- this type does not have any way to track whether or not any non-ascii
