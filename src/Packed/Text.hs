@@ -16,6 +16,7 @@
 module Packed.Text
   ( Text(..)
   , empty
+  , singleton
   , pack
   , unpack
   , breakChar
@@ -128,6 +129,9 @@ writeChar !c !ix !marr
       return (ix + 4)
   where
   !codepoint = intToWord (ord c)
+
+singleton :: Char -> Text
+singleton c = let x = TW.singleton c in Text x 0 (PM.sizeofByteArray x)
 
 unpack :: Text -> String
 unpack !t = TW.unpack off len arr

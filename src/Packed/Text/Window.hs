@@ -16,6 +16,7 @@
 module Packed.Text.Window
   ( unpack
   , pack
+  , singleton
   ) where
 
 import Data.Char (ord,chr)
@@ -100,6 +101,13 @@ word8ToWord = fromIntegral
 
 wordToChar :: Word -> Char
 wordToChar w = chr (fromIntegral w)
+
+-- this could be improved a little
+singleton :: Char -> ByteArray
+singleton c = runST $ do
+  marr <- PM.newByteArray (charBytes c)
+  !_ <- writeChar c 0 marr
+  PM.unsafeFreezeByteArray marr
 
 -- The result contains the byte array of UTF8-encoded text and
 -- a word indicating the multiplicity (0 if there were only characters

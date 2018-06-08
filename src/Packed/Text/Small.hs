@@ -14,6 +14,7 @@
 module Packed.Text.Small
   ( SmallText(..)
   , empty
+  , singleton
   , decodeAscii
   , encodeUtf8
   , pack
@@ -48,6 +49,9 @@ instance IsString SmallText where
 
 empty :: SmallText
 empty = SmallText BA.empty
+
+singleton :: Char -> SmallText
+singleton = SmallText . TW.singleton
 
 decodeAscii :: ByteArray -> Maybe SmallText
 decodeAscii arr = if BA.isAscii arr
