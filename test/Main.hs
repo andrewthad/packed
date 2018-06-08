@@ -14,7 +14,7 @@ import Data.Bifunctor (bimap)
 import Data.Bits ((.&.),(.|.),unsafeShiftR)
 import Data.Char (chr)
 import Data.Monoid
-import Data.Primitive (Array)
+import Data.Primitive (Array,UnliftedArray,PrimUnlifted)
 import Data.Set (Set)
 import Data.Word (Word8)
 import Data.Proxy (Proxy(..))
@@ -37,8 +37,10 @@ import System.IO (hFlush,stdout)
 import qualified Data.Char
 import qualified Data.Map
 import qualified Data.List.Split as LS
+import qualified Data.Primitive as PM
 import qualified Data.Set as S
 import qualified GHC.OldList as L
+import qualified GHC.Exts as E
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Small as BA
@@ -47,6 +49,7 @@ import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes.Trie as Trie
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Text as T
+import qualified Packed.Text.Small as TS
 import qualified Test.Tasty.Hedgehog as H
 import qualified Test.Tasty.QuickCheck as TQC
 import qualified Test.QuickCheck.Classes as QCC
@@ -116,6 +119,10 @@ tests = testGroup "Tests"
       ]
     , lawsToTest (QCC.semigroupLaws (Proxy :: Proxy T.Text))
     , lawsToTest (QCC.monoidLaws (Proxy :: Proxy T.Text))
+    ]
+  , testGroup "SmallText"
+    [ TQC.testProperty "intercalate" $ \t ts ->
+        TS.intercalate t ts QC.=== mconcat (L.intersperse t (E.toList ts))
     ]
   ]
 
@@ -549,7 +556,17 @@ englishWords = map s2b
   , "power", "startle", "donation"
   ]
 
+-- TODO: make this incorporate slicing
 instance QC.Arbitrary T.Text where
   arbitrary = fmap T.pack qcGenString
   shrink = map T.pack . QC.shrink . T.unpack
+
+instance QC.Arbitrary TS.SmallText where
+  arbitrary = fmap TS.pack qcGenString
+  shrink = map TS.pack . QC.shrink . TS.unpack
+
+instance (QC.Arbitrary a, PrimUnlifted a) => QC.Arbitrary (UnliftedArray a) where
+  arbitrary = do
+    xs <- QC.vector =<< QC.choose (0,3)
+    return (PM.unliftedArrayFromList xs)
 
