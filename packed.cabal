@@ -42,6 +42,7 @@ library
     Packed.Bytes.Builder.IO
     Packed.Text
     Packed.Text.Small
+    Packed.Text.Window
   default-language: Haskell2010
 
 test-suite test

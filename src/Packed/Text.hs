@@ -43,6 +43,8 @@ import GHC.Word (Word(W#),Word8(W8#))
 import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
 import Control.Monad.ST (ST,runST)
 import Packed.Bytes (Bytes(..))
+import Data.String (IsString(fromString))
+import qualified Packed.Text.Window as TW
 import qualified Data.Char
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Window as BAW
@@ -58,6 +60,9 @@ data Text = Text
 -- characters are present, it may be set to either single
 -- or multiple. Functions should try to set it to single
 -- when possible.
+
+instance IsString Text where
+  fromString = pack
 
 instance Eq Text where
   t1 == t2 = Bytes arr1 off1 len1 == Bytes arr2 off2 len2
@@ -80,36 +85,6 @@ single = Multiplicity 0
 multiple :: Multiplicity
 multiple = Multiplicity binaryOneThenZeroes
 
-pack :: String -> Text
-pack str = case metadata 0 single str of
-  (!totalBytes,!totalMult) -> 
-    let !arr = runST $ do
-          marr <- PM.newByteArray totalBytes
-          let go [] !_ = return ()
-              go (!c : cs) !ix0 = do
-                ix1 <- writeChar c ix0 marr
-                go cs ix1
-          go str 0
-          PM.unsafeFreezeByteArray marr
-     in Text arr (buildZeroOffMult totalMult) totalBytes
-  where
-  metadata :: Int -> Multiplicity -> [Char] -> (Int,Multiplicity)
-  metadata !totalBytes !totalMult [] = (totalBytes,totalMult)
-  metadata !totalBytes !totalMult (!c : cs) =
-    let !bytes = charBytes c
-        !mult = if bytes < 2 then single else multiple
-     in metadata (bytes + totalBytes) (appendMult mult totalMult) cs
-
--- Result is between 1 and 4. The guards used here do not have to treat
--- surrogates as a special case.
-charBytes :: Char -> Int
-charBytes !c
-  | codepoint < 0x80 = 1
-  | codepoint < 0x800 = 2
-  | codepoint < 0x10000 = 3
-  | otherwise = 4
-  where
-  !codepoint = intToWord (ord c)
 
 -- returns the new index
 writeChar :: Char -> Int -> PM.MutableByteArray s -> ST s Int
@@ -142,15 +117,13 @@ writeChar !c !ix !marr
   !codepoint = intToWord (ord c)
 
 unpack :: Text -> String
-unpack !t = go off
+unpack !t = TW.unpack off len arr
   where
-  go :: Int -> String
-  go !ix0 = if ix0 < len + off
-    then
-      let !(!ix1,!c) = nextChar arr ix0
-       in c : go ix1
-    else []
   !(!arr,!off,!len,!_) = textMatch t
+
+pack :: String -> Text
+pack s = case TW.pack s of
+  (arr,mult) -> Text arr (buildOffMult 0 (Multiplicity mult)) (BA.length arr)
 
 nextChar :: ByteArray -> Int -> (Int,Char)
 nextChar !arr !ix
@@ -533,14 +506,6 @@ decodeUtf8 b = case decodeResumeUtf8 b of
   (# !t, (# | (# #) | #) #) -> Just t
   (# !_, (# | | !_ #) #) -> Nothing
 
--- decodeUtf8 :: Bytes -> Maybe Text
--- decodeUtf8 b = case decodeResumeUtf8 b of
---   (# !_, West !_ #) -> Nothing
---   (# !t, Center () #) -> Just t
---   (# !_, East !_ #) -> Nothing
-
-data Choice a b c = West a | Center b | East c
-
 decodeResumeUtf8 ::
      Bytes
   -> (# Text, (# Bytes | (# #) | (# Word#, Word#, Word# #) #) #)
@@ -586,13 +551,6 @@ codepointFromThreeBytes w1 w2 w3 =
   unsafeShiftL (word8ToWord w1 .&. 0b00001111) 12 .|. 
   unsafeShiftL (word8ToWord w2 .&. 0b00111111) 6 .|. 
   (word8ToWord w3 .&. 0b00111111)
-
-convertTuple :: (# (# #) | (# Word#, Word#, Word# #) #) -> Either () (Word,Word,Word)
-convertTuple (# (# #) | #) = Left ()
-convertTuple (# | w #) = Right (convertWordTuple w)
-
-convertWordTuple :: (# Word#, Word#, Word# #) -> (Word,Word,Word)
-convertWordTuple (# a,b,c #) = ( W# a, W# b, W# c )
 
 encodeUtf8 :: Text -> Bytes
 encodeUtf8 t = Bytes arr off len where
