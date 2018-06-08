@@ -17,6 +17,7 @@ import Data.Monoid
 import Data.Primitive (Array)
 import Data.Set (Set)
 import Data.Word (Word8)
+import Data.Proxy (Proxy(..))
 import GHC.Exts (Int#,fromList)
 import GHC.Int (Int(I#))
 import GHC.Types
@@ -47,6 +48,9 @@ import qualified Packed.Bytes.Trie as Trie
 import qualified Packed.Bytes.Window as BAW
 import qualified Packed.Text as T
 import qualified Test.Tasty.Hedgehog as H
+import qualified Test.Tasty.QuickCheck as TQC
+import qualified Test.QuickCheck.Classes as QCC
+import qualified Test.QuickCheck as QC
 
 -- tests in other modules
 import qualified Parser as Parser
@@ -110,8 +114,13 @@ tests = testGroup "Tests"
       , testProperty "surrogates" textDecodeUtf8Surrogates
         -- TODO: test against malformed inputs to decodeUtf8
       ]
+    , lawsToTest (QCC.semigroupLaws (Proxy :: Proxy T.Text))
+    , lawsToTest (QCC.monoidLaws (Proxy :: Proxy T.Text))
     ]
   ]
+
+lawsToTest :: QCC.Laws -> TestTree
+lawsToTest (QCC.Laws name pairs) = testGroup name (map (uncurry TQC.testProperty) pairs)
 
 byteTableLookupProp :: Property
 byteTableLookupProp = property $ do
@@ -257,6 +266,29 @@ genOffset :: Int -> Gen Int
 genOffset originalLen = integral (linear 0 maxDiscard)
   where
   maxDiscard = min 19 (div originalLen 3)
+
+qcGenString :: QC.Gen String
+qcGenString = QC.frequency [ (3, qcGenStringAscii), (7, qcGenStringUnicode) ]
+
+-- Only uses ascii characters
+qcGenStringAscii :: QC.Gen String
+qcGenStringAscii = do
+  n <- QC.choose (0,40)
+  QC.vectorOf n (fmap chr (QC.choose (0,127)))
+
+-- Healthy mixture of multi-byte characters from all planes.
+qcGenStringUnicode :: QC.Gen String
+qcGenStringUnicode = do
+  n <- QC.choose (0,40)
+  QC.vectorOf n qcGenCharUnicode
+
+qcGenCharUnicode :: QC.Gen Char
+qcGenCharUnicode = QC.oneof
+  [ fmap chr (QC.choose (0x00,0x7F))
+  , fmap chr (QC.choose (0x80,0x7FF))
+  , fmap (chr . (\x -> if x >= 0xD800 && x <= 0xDFFF then 0xD799 else x)) (QC.choose (0x800,0xFFFF))
+  , fmap chr (QC.choose (0x10000,0x10FFFF))
+  ]
 
 -- Generates a string that is either entirely ascii
 -- or that is a healthy mixture of characters with
@@ -516,4 +548,8 @@ englishWords = map s2b
   , "correct", "coronation", "after", "before", "to"
   , "power", "startle", "donation"
   ]
+
+instance QC.Arbitrary T.Text where
+  arbitrary = fmap T.pack qcGenString
+  shrink = map T.pack . QC.shrink . T.unpack
 

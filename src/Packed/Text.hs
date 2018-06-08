@@ -64,6 +64,20 @@ data Text = Text
 instance IsString Text where
   fromString = pack
 
+instance Semigroup Text where
+  t1 <> t2 = Text arr (buildOffMult 0 (appendMult mult1 mult2)) (len1 + len2)
+    where
+    !(!arr1,!off1,!len1,!mult1) = textMatch t1
+    !(!arr2,!off2,!len2,!mult2) = textMatch t2
+    !arr = runST $ do
+      marr <- PM.newByteArray (len1 + len2)
+      PM.copyByteArray marr 0 arr1 off1 len1
+      PM.copyByteArray marr len1 arr2 off2 len2
+      PM.unsafeFreezeByteArray marr
+
+instance Monoid Text where
+  mempty = empty
+
 instance Eq Text where
   t1 == t2 = Bytes arr1 off1 len1 == Bytes arr2 off2 len2
     where
@@ -84,7 +98,6 @@ single = Multiplicity 0
 
 multiple :: Multiplicity
 multiple = Multiplicity binaryOneThenZeroes
-
 
 -- returns the new index
 writeChar :: Char -> Int -> PM.MutableByteArray s -> ST s Int
