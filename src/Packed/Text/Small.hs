@@ -30,7 +30,7 @@ import qualified Packed.Bytes.Small as BA
 import qualified Packed.Text.Window as TW
 
 newtype SmallText = SmallText ByteArray 
-  deriving (Eq,Semigroup,Monoid,PrimUnlifted)
+  deriving (Eq,Ord,Semigroup,Monoid,PrimUnlifted)
 
 instance Show SmallText where
   showsPrec p ps r = showsPrec p (unpack ps) r
