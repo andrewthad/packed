@@ -16,7 +16,12 @@
 
 module Packed.Bytes.Builder
   ( Builder(..)
+    -- * Building
+  , byteArray
+    -- * Running
   , toByteArray
+  , toByteArrayWith
+  , foldlToByteArrayWith'
   ) where
 
 import Control.Monad.ST (runST)
@@ -27,7 +32,8 @@ import GHC.ST (ST(..))
 import GHC.Magic (runRW#)
 import GHC.Exts (State#,MutableByteArray#,Int#)
 import GHC.Exts (copyMutableByteArray#,newByteArray#,unsafeFreezeByteArray#,shrinkMutableByteArray#,getSizeofMutableByteArray#)
-import GHC.Exts ((+#),(>#),(*#))
+import GHC.Exts (copyByteArray#,sizeofByteArray#)
+import GHC.Exts ((+#),(>#),(*#),(>=#),(-#))
 
 import qualified Data.Foldable as F
 import qualified Data.Primitive as PM
@@ -41,7 +47,7 @@ newtype Builder = Builder
        (Buffer# s -> Int# -> State# s -> (# State# s, Buffer# s #))
        -- Callback that consumes a filled buffer. It accepts a size hint, and
        -- it returns a newly allocated buffer with length at least the size given
-       -- by the hint. Do not reused the filled buffer after passing it to
+       -- by the hint. Do not reuse the filled buffer after passing it to
        -- this callback.
     -> Buffer# s
     -> State# s -> (# State# s, Buffer# s #)
@@ -52,6 +58,19 @@ instance Semigroup Builder where
 
 instance Monoid Builder where
   mempty = empty
+
+byteArray :: ByteArray -> Builder
+byteArray (ByteArray arr) = Builder
+  (\push (# marr0, ix0 #) s0 -> case getSizeofMutableByteArray# marr0 s0 of
+    (# s1, len #) -> case (len -# ix0) >=# sz of
+      1# -> case copyByteArray# arr 0# marr0 ix0 sz s1 of
+        s2 -> (# s2, (# marr0, ix0 +# sz #) #)
+      _ -> case push (# marr0, ix0 #) sz s1 of
+        (# s2, (# marr1, ix1 #) #) -> case copyByteArray# arr 0# marr1 0# sz s2 of
+          s3 -> (# s3, (# marr1, ix1 +# sz #) #)
+  )
+  where
+  !sz = sizeofByteArray# arr
 
 -- | Convert a builder to a byte array.
 toByteArray :: Builder -> ByteArray
