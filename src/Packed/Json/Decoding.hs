@@ -5,11 +5,15 @@
 
 module Packed.Json.Decoding
   ( JsonDecoding(..)
+  , Value(..)
   , valueParser
   ) where
 
+import Data.Char (ord)
+import Data.Coerce (coerce)
 import Data.Kind (Type)
 import Data.Primitive (Array,PrimArray,Prim)
+import Data.Ratio ((%))
 import Data.Type.Coercion (Coercion(..))
 import Data.Word (Word8)
 import GHC.Exts (Any)
@@ -18,8 +22,6 @@ import Packed.Bytes.Parser
 import Packed.Bytes.Trie (Trie)
 import Packed.Text (Text(..))
 import Packed.Text.Small (SmallText)
-import Data.Char (ord)
-import Data.Coerce (coerce)
 
 import qualified Data.Type.Coercion as C
 import qualified Packed.Bytes.Parser as P
@@ -34,10 +36,11 @@ data JsonError
 data Value
   = ValueArray !(Array Value)
   | ValueObject !(Array (Text,Value)) -- fix this, choose a better map type
-  | ValueNumber !Word -- fix this, choose a better number type
+  | ValueNumber !Rational -- at some point, choose a better number type
   | ValueNull
   | ValueString !Text
   | ValueBool !Bool
+  deriving (Show,Eq)
 
 data JsonDecoding :: Type -> Type where
   JsonDecodingRaw :: (Value -> Maybe a) -> JsonDecoding a
@@ -104,10 +107,29 @@ decodingToParser = \case
     maybe P.failure pure (f v)
   JsonDecodingCoerce Coercion d -> coerce (decodingToParser d)
   JsonDecodingArray d -> do
+    P.skipSpace
     P.byte (charToWord8 '[')
     vals <- P.replicateIntersperseByte (charToWord8 ',') (decodingToParser d)
     P.byte (charToWord8 ']')
+    P.skipSpace
     pure vals 
+  JsonDecodingGroundArray g -> case g of
+    GroundWord ->
+         P.skipSpace
+      *> P.byte (charToWord8 '[')
+      *> P.replicateIntersperseBytePrim
+           (charToWord8 ',')
+           (P.skipSpace *> P.decimalWord <* P.skipSpace)
+      <* P.byte (charToWord8 ']')
+      <* P.skipSpace
+    GroundInt ->
+         P.skipSpace
+      *> P.byte (charToWord8 '[')
+      *> P.replicateIntersperseBytePrim
+           (charToWord8 ',')
+           (P.skipSpace *> P.decimalInt <* P.skipSpace)
+      <* P.byte (charToWord8 ']')
+      <* P.skipSpace
 
 valueParser :: Parser Value
 valueParser = do
@@ -144,11 +166,41 @@ valueParser = do
         pure (key,val) 
       P.skipSpace
       P.byte (charToWord8 '}')
-      pure (ValueObject vals) 
-    _ -> let w = word8ToWord x - 48
-          in if w < 10
-               then fmap ValueNumber (decimalWordStarting w)
-               else P.failure
+      pure (ValueObject vals)
+    45 -> do
+      w <- P.decimalDigitWord
+      fmap ValueNumber (parserDecimalRational False (fromIntegral w))
+    _ -> do
+      let w = word8ToWord x - 48
+      if w < 10
+        then if w > 0
+          then fmap ValueNumber (parserDecimalRational True (fromIntegral w))
+          else do
+            byt <- P.peek -- should use some kind of peekMaybe
+            case byt of
+              46 -> do
+                _ <- P.any
+                i <- P.decimalDigitWord
+                fractionalPart <- parserFractionalPart (fromIntegral i)
+                c <- P.peek -- should use a peekMaybe
+                if c == 69 || c == 109
+                  then do
+                    _ <- P.any
+                    e <- exponentAfterE
+                    pure (ValueNumber (fractionalPart * (tenExp e)))
+                  else pure (ValueNumber fractionalPart)
+              69 -> do
+                _ <- P.any
+                _ <- P.optionalPlusMinus
+                P.skipDigits
+                pure (ValueNumber 0)
+              101 -> do
+                _ <- P.any
+                _ <- P.optionalPlusMinus
+                P.skipDigits
+                pure (ValueNumber 0)
+              _ -> pure (ValueNumber 0)
+        else P.failure
   P.skipSpace
   pure v
     
@@ -166,3 +218,53 @@ charToWord8 = fromIntegral . ord
 word8ToWord :: Word8 -> Word
 word8ToWord = fromIntegral
 
+parserDecimalRational :: Bool -> Integer -> Parser Rational
+parserDecimalRational isPositive initialDigit = do
+  wholePart <- parserPositiveInteger initialDigit
+  k <- P.peek >>= \case
+    46 -> do
+      _ <- P.any
+      i <- P.decimalDigitWord
+      fractionalPart <- parserFractionalPart (fromIntegral i)
+      c <- P.peek
+      if c == 69 || c == 101
+        then do
+          _ <- P.any
+          e <- exponentAfterE
+          pure (((wholePart % 1) + fractionalPart) * (tenExp e))
+        else pure ((wholePart % 1) + fractionalPart)
+    101 -> do
+      _ <- P.any
+      e <- exponentAfterE
+      pure ((wholePart % 1) * (tenExp e))
+    69 -> do
+      _ <- P.any
+      e <- exponentAfterE
+      pure ((wholePart % 1) * (tenExp e))
+    _ -> pure (wholePart % 1)
+  pure (if isPositive then k else negate k)
+
+tenExp :: Integer -> Rational
+tenExp x = if x > 0 then 10 ^ x else 0.1 ^ negate x
+
+-- argument should be between 0 and 9.
+parserFractionalPart :: Integer -> Parser Rational
+parserFractionalPart = go 10 where
+  go !denominator !numerator = do
+    P.optionalDecimalDigitWord >>= \case
+      Nothing -> pure (numerator % denominator)
+      Just d -> go (denominator * 10) (numerator * 10 + fromIntegral d)
+  
+parserPositiveInteger :: Integer -> Parser Integer
+parserPositiveInteger = go where
+  go !i = P.optionalDecimalDigitWord >>= \case
+    Nothing -> pure i
+    Just j -> go (i * 10 + fromIntegral j)
+
+exponentAfterE :: Parser Integer
+exponentAfterE = do
+  isPositive <- P.optionalPlusMinus
+  i <- P.decimalDigitWord
+  k <- parserPositiveInteger (fromIntegral i)
+  pure (if isPositive then k else negate k)
+  

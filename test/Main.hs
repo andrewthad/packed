@@ -57,6 +57,7 @@ import qualified Test.QuickCheck as QC
 
 -- tests in other modules
 import qualified Parser as Parser
+import qualified Json as Json
 
 main :: IO ()
 main = defaultMain tests
@@ -87,6 +88,7 @@ tests = testGroup "Tests"
         [ testProperty "alpha" Parser.byteParserArtificalA
         , testProperty "beta" Parser.byteParserArtificalB
         , testProperty "delta" Parser.byteParserArtificalDelta
+        , testProperty "kappa" Parser.byteParserArtificalKappa
         , testProperty "http-request" Parser.byteParserHttpRequest
         ]
       , testGroup "Failure"
@@ -96,6 +98,9 @@ tests = testGroup "Tests"
       , testGroup "Trie"
         [ testProperty "snmptrapd" Parser.byteParserTrieSnmp
         , testProperty "numbers" Parser.byteParserTrieNumbers
+        ]
+      , testGroup "JSON"
+        [ testProperty "plain" Json.valueParserProperty
         ]
       ]
     , testGroup "Trie"

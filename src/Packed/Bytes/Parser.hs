@@ -26,9 +26,12 @@ module Packed.Bytes.Parser
   , parseBytes
   , parseStreamST
   , parseStreamIO
+  , decimalInt
   , decimalWord
   , decimalWordStarting
   , decimalDigitWord
+  , optionalPlusMinus
+  , optionalDecimalDigitWord
   , takeBytesWhileMember
   , takeBytesUntilMemberConsume
   , takeBytesUntilByteConsume
@@ -53,6 +56,7 @@ module Packed.Bytes.Parser
   -- , replicateUntilByte
   , replicateIntersperseByte
   , replicateIntersperseMember
+  , replicateIntersperseBytePrim
   , foldIntersperseParserUntilEnd
   , foldIntersperseByte
   , trie
@@ -73,7 +77,8 @@ module Packed.Bytes.Parser
 
 import Control.Applicative
 import Control.Monad.ST (runST)
-import Data.Primitive (Array(..),MutableArray(..))
+import Data.Char (ord)
+import Data.Primitive (Prim,Array(..),MutableArray(..),PrimArray(..))
 import Data.Semigroup (Semigroup)
 import GHC.Int (Int(I#))
 import GHC.ST (ST(..))
@@ -96,11 +101,13 @@ import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Trie as Trie
 import qualified Packed.Bytes.Window as BAW
 
-import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),(<#),(==#),(>=#),
-  MutableArray#,writeArray#,unsafeFreezeArray#,newArray#,
+import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
+  (<#),(==#),(>=#),(*#),
+  MutableArray#,MutableByteArray#,writeArray#,unsafeFreezeArray#,newArray#,
   unsafeFreezeByteArray#,newByteArray#,runRW#,
   plusWord#,timesWord#,indexWord8Array#,eqWord#,fromListN,andI#,
-  clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,
+  clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,quotInt#,
+  shrinkMutableByteArray#,copyMutableByteArray#,
   RealWorld)
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
@@ -111,7 +118,7 @@ type Result# s (r :: RuntimeRep) (a :: TYPE r) =
 type BytesRep = 'TupleRep '[ 'UnliftedRep, 'IntRep, 'IntRep ]
 
 debugMode :: Bool
-debugMode = True
+debugMode = False
 
 data Result s a = Result
   { resultLeftovers :: !(Maybe (Leftovers s))
@@ -241,6 +248,9 @@ bytesIndex (# arr, off, _ #) ix = BA.unsafeIndex (ByteArray arr) (I# off + ix)
 word8ToWord :: Word8 -> Word
 word8ToWord = fromIntegral
 
+wordToInt :: Word -> Int
+wordToInt = fromIntegral
+
 -- option :: a -> Parser a -> Parser a
 -- option a (
 
@@ -307,6 +317,22 @@ decimalDigit = ParserLevity $ \leftovers0 s0 -> case leftovers0 of
              in if w < 10
                   then (# s1, (# (# | (# unsafeDrop# 1# bytes1, stream1 #) #), (# | unboxWord w #) #) #)
                   else (# s1, (# (# | (# bytes1, stream1 #) #), (# (# #) | #) #) #)
+
+optionalDecimalDigit :: ParserLevity ('SumRep '[ 'TupleRep '[], 'WordRep]) (Maybe# Word#)
+optionalDecimalDigit = ParserLevity $ \leftovers0 s0 -> case leftovers0 of
+  (# (# #) | #) -> (# s0, (# (# (# #) | #), (# | (# (# #) | #) #) #) #)
+  (# | (# bytes0@(# _,_,len #), stream0 #) #) ->
+    let !(# s1, r #) = case len of
+          0# -> nextNonEmpty stream0 s0
+          _ -> (# s0, (# | (# bytes0, stream0 #) #) #)
+     in case r of
+          (# (# #) | #) -> (# s1, (# (# (# #) | #), (# (# #) | #) #) #)
+          (# | (# bytes1, stream1 #) #) ->
+            let !w = word8ToWord (bytesIndex bytes1 0) - 48
+             in if w < 10
+                  then (# s1, (# (# | (# unsafeDrop# 1# bytes1, stream1 #) #), (# | (# | unboxWord w #) #) #) #)
+                  else (# s1, (# (# | (# bytes1, stream1 #) #), (# | (# (# #) | #) #) #) #)
+
 
 decimalContinue :: Word# -> ParserLevity 'WordRep Word#
 decimalContinue theWord = ParserLevity (action theWord) where
@@ -550,7 +576,9 @@ byteFourUnboxed expected0 expected1 expected2 expected3 = ParserLevity go where
     (getParserLevity
       (bindBoxed (byteUnboxed expected0)
         (\_ -> bindBoxed (byteUnboxed expected1)
-          (\_ -> byteUnboxed expected2)
+          (\_ -> bindBoxed (byteUnboxed expected2)
+            (\_ -> byteUnboxed expected3)
+          )
         )
       )
     )
@@ -574,14 +602,25 @@ byteFourUnboxed expected0 expected1 expected2 expected3 = ParserLevity go where
              in (# s, (# (# | (# unsafeDrop# res theBytes, stream #) #), (# (# #) | #) #) #)
     )
 
-optionalByteUnboxed :: Word8 -> ParserLevity 'LiftedRep ()
+optionalByteUnboxed :: Word8 -> ParserLevity 'LiftedRep Bool
 optionalByteUnboxed (W8# expected) = ParserLevity go where
-  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep () #)
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep Bool #)
   go m s0 = withNonEmpty m s0
-    (\s -> (# s, (# (# (# #) | #), (# | () #) #) #))
+    (\s -> (# s, (# (# (# #) | #), (# | False #) #) #))
     (\actual theBytes stream s -> case eqWord# expected actual of
-      1# -> (# s, (# (# | (# unsafeDrop# 1# theBytes, stream #) #), (# | () #) #) #)
-      _ -> (# s, (# (# | (# theBytes, stream #) #), (# | () #) #) #)
+      1# -> (# s, (# (# | (# unsafeDrop# 1# theBytes, stream #) #), (# | True #) #) #)
+      _ -> (# s, (# (# | (# theBytes, stream #) #), (# | False #) #) #)
+    )
+
+optionalPlusMinusUnboxed :: ParserLevity 'LiftedRep Bool
+optionalPlusMinusUnboxed = ParserLevity go where
+  go :: Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep Bool #)
+  go m s0 = withNonEmpty m s0
+    (\s -> (# s, (# (# (# #) | #), (# | True #) #) #))
+    (\actual theBytes stream s -> case actual of
+      43## -> (# s, (# (# | (# unsafeDrop# 1# theBytes, stream #) #), (# | True #) #) #)
+      45## -> (# s, (# (# | (# unsafeDrop# 1# theBytes, stream #) #), (# | False #) #) #)
+      _ -> (# s, (# (# | (# theBytes, stream #) #), (# | True #) #) #)
     )
 
 anyUnboxed :: ParserLevity 'WordRep Word#
@@ -665,9 +704,19 @@ byteFour (W8# a) (W8# b) (W8# c) (W8# d) = Parser (byteFourUnboxed a b c d)
 
 -- | Consume a byte matching the specified one. If the next byte
 -- in the input does not match the given byte, it is not consumed.
--- This parser always succeeds even if there is no input.
-optionalByte :: Word8 -> Parser ()
+-- This parser always succeeds even if there is no input. It returns
+-- True if the byte was present (and consumed) and False is the byte
+-- was not present.
+optionalByte :: Word8 -> Parser Bool
 optionalByte theByte = Parser (optionalByteUnboxed theByte)
+
+-- | Consume a byte that is either a plus sign or a minus sign.
+-- If neither of those two bytes follow or if the stream is empty,
+-- consume nothing. This always succeeds. If a plus sign was consumed
+-- or if nothing was consumed, returns True. If a minus sign was
+-- consumed, returns False.
+optionalPlusMinus :: Parser Bool
+optionalPlusMinus = Parser optionalPlusMinusUnboxed
 
 bytes :: Bytes -> Parser ()
 bytes b = Parser (bytesUnboxed b)
@@ -801,9 +850,32 @@ replicateIntersperseMember !set (Parser (ParserLevity f)) = Parser (ParserLevity
          in (# s1, (# (# | (# theBytes, stream #) #), (# | theArray #) #) #)
     )
 
--- replicateIntersperseBytePrim :: forall a. Prim a
---   => Word8 -> Parser a -> Parser (PrimArray a)
--- replicateIntersperseBytePrim !(W8# sepByte) (Parser (ParserLevity
+replicateIntersperseBytePrim :: forall a. Prim a
+  => Word8 -> Parser a -> Parser (PrimArray a)
+replicateIntersperseBytePrim !(W8# sepByte) (Parser (ParserLevity f)) =
+  Parser (ParserLevity (onceThenReplicatePrim (ParserLevity f) go))
+  where
+  go :: Int# -> Int# -> MutableByteArray# s -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (PrimArray a) #)
+  go !ix !sz !marr !m !s0 = withNonEmpty m s0
+    (\s1 -> case shrinkMutableByteArray# marr (ix *# PM.sizeOf# (undefined :: a)) s1 of
+      s2 -> case unsafeFreezeByteArray# marr s2 of
+        (# s3, arr #) -> (# s3, (# (# (# #) | #), (# | PrimArray arr #) #) #)
+    )
+    (\theByte theBytes stream s1 -> case eqWord# theByte sepByte of
+      1# -> case f (# | (# unsafeDrop# 1# theBytes, stream #) #) s1 of
+        (# s2, (# leftovers, res #) #) -> case res of
+          (# (# #) | #) -> (# s2, (# leftovers, (# (# #) | #) #) #)
+          (# | !x #) -> case ix <# sz of
+            1# -> case PM.writeByteArray# marr ix x s2 of
+              s3 -> go (ix +# 1# ) sz marr leftovers s3
+            _ -> case newByteArray# (sz *# 2# *# PM.sizeOf# (undefined :: a)) s2 of
+              (# s3, marrNew #) -> case copyMutableByteArray# marr 0# marrNew 0# (sz *# PM.sizeOf# (undefined :: a)) s3 of
+                s4 -> case PM.writeByteArray# marrNew ix x s4 of
+                  s5 -> go (ix +# 1#) (sz *# 2#) marrNew leftovers s5
+      _ -> case shrinkMutableByteArray# marr (ix *# PM.sizeOf# (undefined :: a)) s1 of
+        s2 -> case unsafeFreezeByteArray# marr s2 of
+          (# s3, arr #) -> (# s3, (# (# | (# theBytes, stream #) #), (# | PrimArray arr #) #) #)
+    )
 
 -- | Replicate the parser as long as we encounter the specified byte
 -- after each run of the parser. If the stream ends where the separator
@@ -843,6 +915,33 @@ onceThenReplicate (ParserLevity f) go m s0 = withNonEmpty m s0
       (# (# #) | #) -> (# s2, (# leftovers, (# (# #) | #) #) #)
       (# | !x #) -> go 1# [x] leftovers s2
   )
+
+onceThenReplicatePrim :: forall s a. Prim a
+  => ParserLevity 'LiftedRep a
+  -> (Int# -> Int# -> MutableByteArray# s -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (PrimArray a) #))
+  -> (Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# s 'LiftedRep (PrimArray a) #))
+onceThenReplicatePrim (ParserLevity f) go m s0 = withNonEmpty m s0
+  (\s1 -> (# s1, (# (# (# #) | #), (# | mempty #) #) #)
+  )
+  (\_ theBytes stream s1 -> case f (# | (# theBytes, stream #) #) s1 of
+    (# s2, (# leftovers, res #) #) -> case res of
+      (# (# #) | #) -> (# s2, (# leftovers, (# (# #) | #) #) #)
+      (# | !x #) -> let sz = chooseMinElementSize (PM.sizeOf# (undefined :: a)) in
+        case newByteArray# (sz *# PM.sizeOf# (undefined :: a)) s2 of
+          (# s3, marr #) -> case PM.writeByteArray# marr 0# x s3 of
+            s4 -> go 1# sz marr leftovers s4
+  )
+
+chooseMinElementSize ::
+     Int# -- element size
+  -> Int#
+chooseMinElementSize sz =
+  case ct ># 0# of
+    1# -> ct
+    _ -> 1#
+  where
+  ct = quotInt# 64# sz
+
 
 die :: String -> a
 die fun = error $ "Packed.Bytes.Parser." ++ fun
@@ -996,13 +1095,20 @@ skipSpace = Parser skipSpaceUnboxed
 {-# RULES "skipSpace-skipSpace{left}" [~2] sequenceLeft skipSpace skipSpace = skipSpace #-}
 
 -- | Parse an ascii-encoded number in decimal notation. This
--- will succeed even for number that are too big to fit into
+-- will succeed even for numbers that are too big to fit into
 -- a machine word.
 decimalWord :: Parser Word
 {-# NOINLINE[2] decimalWord #-}
 decimalWord = Parser (boxWordParser decimalWordUnboxed)
 {-# RULES "decimalWord-unused{right}" [~2] forall a. sequenceRight decimalWord a = sequenceRight skipDigits a #-}
 {-# RULES "decimalWord-unused{left}" [~2] forall a. sequenceLeft a decimalWord = sequenceLeft a skipDigits #-}
+
+decimalInt :: Parser Int
+decimalInt = do
+  hasMinus <- optionalByte (charToWord8 '-')
+  w <- decimalWord
+  let i = wordToInt w
+  return (if hasMinus then negate i else i)
 
 -- | Parse a decimal word, attaching the provided value (should be
 -- between 0 and 9 inclusive) to the front of it.
@@ -1011,6 +1117,9 @@ decimalWordStarting (W# w0) = Parser (boxWordParser (decimalContinue w0))
 
 decimalDigitWord :: Parser Word
 decimalDigitWord = Parser (boxWordParser decimalDigit)
+
+optionalDecimalDigitWord :: Parser (Maybe Word)
+optionalDecimalDigitWord = Parser (boxMaybeWordParser optionalDecimalDigit)
 
 -- | Run a stateful parser.
 statefully :: (forall s. StatefulParser s a) -> Parser a
@@ -1085,6 +1194,15 @@ boxWordParser p = ParserLevity $ \leftovers0 s0 ->
       (# (# #) | #) -> (# s1, (# leftovers1, (# (# #) | #) #) #)
       (# | x #) -> (# s1, (# leftovers1, (# | W# x #) #) #)
 
+boxMaybeWordParser :: ParserLevity ('SumRep '[ 'TupleRep '[], 'WordRep]) (Maybe# Word#) -> ParserLevity 'LiftedRep (Maybe Word)
+boxMaybeWordParser p = ParserLevity $ \leftovers0 s0 ->
+  case getParserLevity p leftovers0 s0 of
+    (# s1, (# leftovers1, val #) #) -> case val of
+      (# (# #) | #) -> (# s1, (# leftovers1, (# (# #) | #) #) #)
+      (# | m #) -> case m of
+         (# (# #) | #) -> (# s1, (# leftovers1, (# | Nothing #) #) #)
+         (# | x #) -> (# s1, (# leftovers1, (# | Just (W# x) #) #) #)
+
 boxBytesWord8Parser ::
      ParserLevity ('TupleRep '[BytesRep, 'WordRep]) (# Bytes#, Word# #)
   -> ParserLevity 'LiftedRep (Bytes,Word8)
@@ -1142,4 +1260,7 @@ failure = Parser (ParserLevity (\m s -> (# s, (# m, (# (# #) | #) #) #)))
 
 word8ToInt :: Word8 -> Int
 word8ToInt = fromIntegral
+
+charToWord8 :: Char -> Word8
+charToWord8 = fromIntegral . ord
 

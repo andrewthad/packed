@@ -11,6 +11,7 @@ module Parser
   ( byteParserArtificalA
   , byteParserArtificalB
   , byteParserArtificalDelta
+  , byteParserArtificalKappa
   , byteParserFailureGamma
   , byteParserFailureEpsilon
   , byteParserHttpRequest
@@ -45,6 +46,7 @@ import qualified Packed.Bytes.Parser as P
 import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Trie as Trie
+import qualified Data.Primitive as PM
 
 -- from common directory
 import qualified Parser.Http.Request as Request
@@ -160,6 +162,22 @@ byteParserArtificalDelta = property $ do
       (r,mextra) = runExampleParser parserArtificialDelta stream
   Nothing === mextra
   Just () === r
+
+byteParserArtificalKappa :: Property
+byteParserArtificalKappa = property $ do
+  let sample = "n:55,10,246,2135,4267"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser
+        ( do
+          P.byte (charToWord8 'n')
+          P.byte (charToWord8 ':')
+          P.replicateIntersperseBytePrim (charToWord8 ',') P.decimalWord <* P.endOfInput
+        ) stream
+  Nothing === mextra
+  Just [55,10,246,2135,4267] === fmap PM.primArrayToList r
 
 byteParserTrieSnmp :: Property
 byteParserTrieSnmp = property $ do

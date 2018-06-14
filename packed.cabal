@@ -53,6 +53,7 @@ test-suite test
   ghc-options: -rtsopts -threaded -O2
   other-modules:
     Parser
+    Json
     Parser.Http.Request
     Data.Trie.Naive
     MinimalTrieParser
