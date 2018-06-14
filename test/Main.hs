@@ -89,6 +89,10 @@ tests = testGroup "Tests"
         , testProperty "delta" Parser.byteParserArtificalDelta
         , testProperty "http-request" Parser.byteParserHttpRequest
         ]
+      , testGroup "Failure"
+        [ testProperty "gamma" Parser.byteParserFailureGamma
+        , testProperty "epsilon" Parser.byteParserFailureEpsilon
+        ]
       , testGroup "Trie"
         [ testProperty "snmptrapd" Parser.byteParserTrieSnmp
         , testProperty "numbers" Parser.byteParserTrieNumbers

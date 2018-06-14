@@ -11,6 +11,8 @@ module Parser
   ( byteParserArtificalA
   , byteParserArtificalB
   , byteParserArtificalDelta
+  , byteParserFailureGamma
+  , byteParserFailureEpsilon
   , byteParserHttpRequest
   , byteParserDecimalWord
   , byteParserEolAccept
@@ -89,6 +91,35 @@ parserArtificialA = do
   P.bytes (B.pack (map charToWord8 " is the answer."))
   P.endOfInput
   return (ArtificialAlpha n (word8ToChar c))
+
+byteParserFailureGamma :: Property
+byteParserFailureGamma = property $ do
+  let sample = "ABCDE"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser
+        ( P.byte (charToWord8 'A') *> P.byte (charToWord8 'B')
+          *> P.byte (charToWord8 'X') *> P.byte (charToWord8 'D')
+          *> P.byte (charToWord8 'E')
+        ) stream
+  Just "CDE" === mextra
+  Nothing === r
+
+byteParserFailureEpsilon :: Property
+byteParserFailureEpsilon = property $ do
+  let sample = "ABCD"
+  elementsPerChunk <- forAll $ int (linear 1 (L.length sample))
+  let strChunks = LS.chunksOf elementsPerChunk sample
+      chunks = map (B.pack . map charToWord8) strChunks
+      stream = foldMap Stream.fromBytes chunks
+      (r,mextra) = runExampleParser
+        ( P.byte (charToWord8 'A') *> P.byte (charToWord8 'B')
+          *> P.byte (charToWord8 'C') *> P.byte (charToWord8 'X')
+        ) stream
+  Just "D" === mextra
+  Nothing === r
 
 data ArtificialBeta = ArtificialBeta
   { artificialBetaName :: !Bytes

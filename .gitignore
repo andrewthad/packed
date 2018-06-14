@@ -39,3 +39,4 @@ docs/db/unthreat
 minimal
 minimal.hs
 .ghc*
+dump.txt
