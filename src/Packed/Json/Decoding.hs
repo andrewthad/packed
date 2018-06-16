@@ -22,16 +22,28 @@ import Packed.Bytes.Parser
 import Packed.Bytes.Trie (Trie)
 import Packed.Text (Text(..))
 import Packed.Text.Small (SmallText)
+import Data.Maybe (fromMaybe)
 
 import qualified Data.Type.Coercion as C
 import qualified Packed.Bytes.Parser as P
 
 data JsonError
-  = JsonErrorIndex !Int JsonError
-  | JsonErrorKey !SmallText JsonError
+  = JsonErrorIndex !Int !JsonError
+  | JsonErrorKey !SmallText !JsonError
   | JsonErrorMissing !SmallText
-  | JsonErrorBase
-  | FooBar
+  | JsonErrorUndocumented
+
+data Error
+  = ErrorMissing !SmallText
+  | ErrorUndocumented
+
+data ContextUnit
+  = ContextUnitKey !SmallText
+  | ContextUnitIndex !Int
+
+data Context
+  = ContextCons !ContextUnit !Context
+  | ContextNil
 
 data Value
   = ValueArray !(Array Value)
@@ -100,7 +112,29 @@ data FastMapDecoding a = FastMapDecoding
   Any -- the function of unknown arity whose return type is a
   (Trie (JsonDecoding Any)) -- trie
 
-decodingToParser :: JsonDecoding a -> Parser a
+decode :: JsonDecoding a -> Bytes -> Either JsonError a
+decode decoding bytes = do
+  let PureResult _ e c = parseBytes bytes ContextNil (decodingToParser decoding)
+   in case e of
+        Right a -> Right a
+        Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m))
+
+prepareContextError :: Context -> Error -> JsonError
+prepareContextError c e = go c (prepareError e) where
+  go ContextNil !j = j
+  go (ContextCons u cnext) !j = go cnext (layerContextUnit u j)
+
+layerContextUnit :: ContextUnit -> JsonError -> JsonError
+layerContextUnit u je = case u of
+  ContextUnitKey key -> JsonErrorKey key je
+  ContextUnitIndex ix -> JsonErrorIndex ix je
+
+prepareError :: Error -> JsonError
+prepareError = \case
+  ErrorMissing key -> JsonErrorMissing key
+  ErrorUndocumented -> JsonErrorUndocumented
+
+decodingToParser :: JsonDecoding a -> Parser Error Context a
 decodingToParser = \case
   JsonDecodingRaw f -> do
     v <- valueParser
@@ -131,7 +165,7 @@ decodingToParser = \case
       <* P.byte (charToWord8 ']')
       <* P.skipSpace
 
-valueParser :: Parser Value
+valueParser :: Parser e c Value
 valueParser = do
   skipSpace
   x <- P.any
@@ -206,7 +240,7 @@ valueParser = do
     
 -- Fix this. It needs to validate that the bytes are UTF-8 encoded
 -- text.
-stringParserAfterQuote :: Parser Text
+stringParserAfterQuote :: Parser e c Text
 stringParserAfterQuote = do
   Bytes arr off len <- takeBytesUntilByteConsume (charToWord8 '"')
   pure (Text arr (fromIntegral off) len)
@@ -218,7 +252,7 @@ charToWord8 = fromIntegral . ord
 word8ToWord :: Word8 -> Word
 word8ToWord = fromIntegral
 
-parserDecimalRational :: Bool -> Integer -> Parser Rational
+parserDecimalRational :: Bool -> Integer -> Parser e c Rational
 parserDecimalRational isPositive initialDigit = do
   wholePart <- parserPositiveInteger initialDigit
   k <- P.peek >>= \case
@@ -248,23 +282,25 @@ tenExp :: Integer -> Rational
 tenExp x = if x > 0 then 10 ^ x else 0.1 ^ negate x
 
 -- argument should be between 0 and 9.
-parserFractionalPart :: Integer -> Parser Rational
+parserFractionalPart :: Integer -> Parser e c Rational
 parserFractionalPart = go 10 where
   go !denominator !numerator = do
     P.optionalDecimalDigitWord >>= \case
       Nothing -> pure (numerator % denominator)
       Just d -> go (denominator * 10) (numerator * 10 + fromIntegral d)
   
-parserPositiveInteger :: Integer -> Parser Integer
+parserPositiveInteger :: Integer -> Parser e c Integer
 parserPositiveInteger = go where
   go !i = P.optionalDecimalDigitWord >>= \case
     Nothing -> pure i
     Just j -> go (i * 10 + fromIntegral j)
 
-exponentAfterE :: Parser Integer
+exponentAfterE :: Parser e c Integer
 exponentAfterE = do
   isPositive <- P.optionalPlusMinus
   i <- P.decimalDigitWord
   k <- parserPositiveInteger (fromIntegral i)
   pure (if isPositive then k else negate k)
   
+
+
