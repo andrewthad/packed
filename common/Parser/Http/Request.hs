@@ -39,7 +39,7 @@ data Header = Header
 http11 :: HttpVersion
 http11 = HttpVersion 1 1
 
-parser :: Parser Request
+parser :: Parser e c Request
 parser = do
   method <- Parser.takeBytesUntilByteConsume (c2w ' ')
   (path,c) <- Parser.takeBytesUntilMemberConsume spaceQuestionSet
@@ -59,13 +59,13 @@ spaceQuestionSet = ByteSet.fromList (map c2w ['?',' '])
 headerNameSet :: ByteSet
 headerNameSet = ByteSet.fromList (map c2w (['_','-'] ++ ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9']))
 
-parserVersion :: Parser HttpVersion
+parserVersion :: Parser e c HttpVersion
 parserVersion = http11 <$ Parser.bytes (s2b "HTTP/1.1")
 
-parserHeaders :: Parser (Array Header)
+parserHeaders :: Parser e c (Array Header)
 parserHeaders = Parser.replicateIntersperseMember nonNewlineSet parserHeader
 
-parserHeader :: Parser Header
+parserHeader :: Parser e c Header
 parserHeader = do
   name <- Parser.takeBytesWhileMember headerNameSet
   Parser.byte (c2w ':')

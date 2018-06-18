@@ -58,7 +58,7 @@ byteParserDecimalWord = property $ do
   w <- forAll (word (linear minBound maxBound))
   let stream = foldMap (Stream.singleton . charToWord8) (show w)
   let v = runST $ do
-        P.Result Nothing (Just x) <- P.parseStreamST stream P.decimalWord
+        P.Result Nothing (Right x) _ <- P.parseStreamST stream () P.decimalWord
         return x
   w === v
 
@@ -78,7 +78,7 @@ byteParserArtificalA = property $ do
   Nothing === mextra
   Just (ArtificialAlpha 524 'C') === r
 
-parserArtificialA :: Parser ArtificialAlpha
+parserArtificialA :: Parser e c ArtificialAlpha
 parserArtificialA = do
   P.bytes (B.pack (map charToWord8 "With "))
   n <- P.decimalWord
@@ -140,7 +140,7 @@ byteParserArtificalB = property $ do
   Nothing === mextra
   Just (ArtificialBeta (s2b "Drew") expected) === r
 
-parserArtificialB :: Parser ArtificialBeta
+parserArtificialB :: Parser e c ArtificialBeta
 parserArtificialB = do
   P.bytes (s2b "Name: ")
   name <- P.takeBytesUntilByteConsume (c2w '.')
@@ -191,10 +191,10 @@ byteParserTrieSnmp = property $ do
   Nothing === mextra
   Just expected === r
 
-snmptrapd :: Trie.Trie (Parser Word)
+snmptrapd :: Trie.Trie (Parser e c Word)
 snmptrapd = Trie.fromList snmptradpPairs
 
-snmptradpPairs :: [(Bytes,Parser Word)]
+snmptradpPairs :: [(Bytes,Parser e c Word)]
 snmptradpPairs =
   [ (s2b "STRING: ", P.byte (c2w '_') *> P.decimalWord <* P.byte (c2w '_') <* P.byte (c2w ' '))
   , (s2b "INTEGER: ", P.decimalWord <* P.skipSpace)
@@ -203,14 +203,14 @@ snmptradpPairs =
   ]
 
 {-# NOINLINE altMap #-}
-altMap :: Map Word8 (Bytes,Parser Word)
+altMap :: Map Word8 (Bytes,Parser e c Word)
 altMap = M.fromList
   [(c2w 'S',(s2b "trauss",P.decimalWord <* P.byte (c2w ' ')))
   ,(c2w 'J',(s2b "hey", P.failure))
   ]
 
 {-# NOINLINE useMap #-}
-useMap :: Parser Word
+useMap :: Parser e c Word
 useMap = do
   w <- P.any
   case M.lookup w altMap of
@@ -237,7 +237,7 @@ numberTrie = Trie.fromList
   , (s2b "zero", 0)
   ]
 
-parserArtificialDelta :: Parser ()
+parserArtificialDelta :: Parser e c ()
 parserArtificialDelta = do
   P.skipDigits
   name <- P.byte (c2w ':')
@@ -289,15 +289,15 @@ byteParserHttpRequest = property $ do
   Nothing === mextra
   Just Request.expected === r
 
-runExampleParser :: Parser a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runExampleParser :: Parser e () a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
 runExampleParser parser stream = runST $ do
-  P.Result mleftovers r <- P.parseStreamST stream parser
+  P.Result mleftovers r _ <- P.parseStreamST stream () parser
   mextra <- case mleftovers of
     Nothing -> return Nothing
     Just (P.Leftovers chunk remainingStream) -> do
       bs <- Stream.unpack remainingStream
       return (Just (map word8ToChar (B.unpack chunk ++ bs)))
-  return (r,mextra)
+  return (either (const Nothing) Just r,mextra)
 
 s2b :: String -> Bytes
 s2b = B.pack . map charToWord8

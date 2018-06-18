@@ -55,7 +55,7 @@ lookupStep :: Word8 -> Maybe (Trie a) -> Maybe (Trie a)
 lookupStep w Nothing = Nothing
 lookupStep w (Just (Trie _ m)) = M.lookup w m
 
-parser :: Trie (P.Parser a) -> P.Parser a
+parser :: Trie (P.Parser e c a) -> P.Parser e c a
 parser (Trie mp m) = case mp of
   Just p -> p
   Nothing -> do

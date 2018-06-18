@@ -62,15 +62,15 @@ valueParserProperty = property $ do
     ) === r
 
 
-runExampleParser :: Parser a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runExampleParser :: Parser e () a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
 runExampleParser parser stream = runST $ do
-  P.Result mleftovers r <- P.parseStreamST stream parser
+  P.Result mleftovers r _ <- P.parseStreamST stream () parser
   mextra <- case mleftovers of
     Nothing -> return Nothing
     Just (P.Leftovers chunk remainingStream) -> do
       bs <- Stream.unpack remainingStream
       return (Just (map word8ToChar (B.unpack chunk ++ bs)))
-  return (r,mextra)
+  return (either (const Nothing) Just r,mextra)
 
 charToWord8 :: Char -> Word8
 charToWord8 = fromIntegral . Data.Char.ord
