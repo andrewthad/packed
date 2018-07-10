@@ -2,30 +2,44 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE UnboxedTuples #-}
 
 module Packed.Json.Decoding
   ( JsonDecoding(..)
   , Value(..)
   , valueParser
+  , decode
   ) where
 
+import Control.Monad (forM_)
+import Control.Monad.ST (runST)
 import Data.Char (ord)
 import Data.Coerce (coerce)
 import Data.Kind (Type)
-import Data.Primitive (Array,PrimArray,Prim)
+import Data.Maybe (fromMaybe)
+import Data.Primitive (Array,PrimArray,Prim,SmallArray,UnliftedArray)
+import Data.Primitive.SmallArray.Maybe (SmallMaybeArray)
 import Data.Ratio ((%))
 import Data.Type.Coercion (Coercion(..))
 import Data.Word (Word8)
 import GHC.Exts (Any)
 import Packed.Bytes (Bytes(..))
-import Packed.Bytes.Parser
+import Packed.Bytes.Parser (Parser,PureResult(..))
+import Packed.Bytes.Small (ByteArray)
 import Packed.Bytes.Trie (Trie)
 import Packed.Text (Text(..))
 import Packed.Text.Small (SmallText)
-import Data.Maybe (fromMaybe)
+import Unsafe.Coerce (unsafeCoerce)
 
+import qualified Data.List as L
+import qualified Data.Primitive as PM
+import qualified Data.Primitive.SmallArray.Maybe as PSAM
 import qualified Data.Type.Coercion as C
+import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Parser as P
+import qualified Packed.Bytes.Trie as T
 
 data JsonError
   = JsonErrorIndex !Int !JsonError
@@ -101,7 +115,8 @@ data MapDecoding a where
        !a -- function
     -> MapDecoding a
   MapDecodingApply ::
-       !Bytes
+       !SmallText
+    -> !ByteArray
     -> JsonDecoding a
     -> Maybe a -- a default value if the key is missing
     -> !(MapDecoding (a -> b)) -- next decoding
@@ -110,11 +125,50 @@ data MapDecoding a where
 data FastMapDecoding a = FastMapDecoding
   !Int -- arity of function of type X -> Y -> ... -> a
   Any -- the function of unknown arity whose return type is a
-  (Trie (JsonDecoding Any)) -- trie
+  (Trie (Indexed (JsonDecoding Any))) -- trie
+  !(SmallMaybeArray Any) -- default values
+  !(UnliftedArray SmallText) -- Names of keys. Used for informative errors.
+
+data Indexed a = Indexed !Int a
+
+-- Internally, this function must use unsafeCoerce.
+accelerateMapDecoding :: MapDecoding a -> FastMapDecoding a
+accelerateMapDecoding = unsafeFromAnyFastMapDecoding . go [] [] [] 0 where
+  go :: [(Bytes,Indexed (JsonDecoding Any))] -- decodings
+     -> [Indexed Any] -- default values
+     -> [SmallText] -- key names
+     -> Int -- function argument count
+     -> MapDecoding b
+     -> FastMapDecoding Any
+  go !decs !defs !keys !n (MapDecodingApply t b dec mdef xs) = go
+    ((B.fromByteArray b,Indexed n (unsafeToAnyJsonDecoding dec)) : decs)
+    (maybe defs (\y -> Indexed n (unsafeToAny y) : defs) mdef)
+    (t : keys)
+    (n + 1)
+    xs
+  go !decs !defs !keys !n (MapDecodingPure f) =
+    let defArray = runST $ do
+          marr <- PSAM.newSmallMaybeArray n Nothing
+          forM_ defs $ \(Indexed ix v) -> do
+            PSAM.writeSmallMaybeArray marr ix (Just v)
+          PSAM.unsafeFreezeSmallMaybeArray marr
+     in FastMapDecoding n (unsafeToAny f) (T.fromList decs) defArray (PM.unliftedArrayFromList (L.reverse keys))
+
+unsafeFromAnyFastMapDecoding :: FastMapDecoding Any -> FastMapDecoding a
+unsafeFromAnyFastMapDecoding = unsafeCoerce
+
+unsafeToAnyJsonDecoding :: JsonDecoding a -> JsonDecoding Any
+unsafeToAnyJsonDecoding = unsafeCoerce
+
+unsafeToAny :: a -> Any
+unsafeToAny = unsafeCoerce
+
+unsafeFromAny :: Any -> a
+unsafeFromAny = unsafeCoerce
 
 decode :: JsonDecoding a -> Bytes -> Either JsonError a
 decode decoding bytes = do
-  let PureResult _ e c = parseBytes bytes ContextNil (decodingToParser decoding)
+  let PureResult _ e c = P.parseBytes bytes ContextNil (decodingToParser decoding)
    in case e of
         Right a -> Right a
         Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m))
@@ -134,6 +188,78 @@ prepareError = \case
   ErrorMissing key -> JsonErrorMissing key
   ErrorUndocumented -> JsonErrorUndocumented
 
+-- This only behaves correctly when there are no
+-- characters that require escaping in any of the expected
+-- keys and when the encoded key does not use unicode
+-- escaping syntax.
+consumeKey ::
+     Trie (Indexed (JsonDecoding Any))
+  -> Parser e c (Either (Trie (Indexed (JsonDecoding Any))) (Indexed (JsonDecoding Any)))
+consumeKey = T.lookupM
+  P.any
+  (P.bytes . B.fromByteArray)
+  (fmap (== charToWord8 '"') P.peek)
+  return
+  
+
+fastMapDecodingToParser :: FastMapDecoding a -> Parser Error Context a
+fastMapDecodingToParser (FastMapDecoding n f decs defs keys) = do
+  P.skipSpace
+  P.byte (charToWord8 '{')
+  P.skipSpace
+  maybeVals <- P.any >>= \case
+    125 -> do -- close curly brace
+      P.skipSpace
+      return defs
+    34 -> P.statefully $ do -- double quote
+      mutVals <- P.mutation (PSAM.thawSmallMaybeArray defs 0 n)
+      let go = do
+            -- Currently, we do not correctly skip over unneeded keys.
+            -- This must be fixed
+            Indexed ix valParser <- P.consumption (P.triePure decs)
+            val <- P.consumption (P.byte (charToWord8 '"') *> P.skipSpace *> P.byte (charToWord8 ':') *> P.skipSpace *> decodingToParser valParser)
+            P.mutation (PSAM.writeSmallMaybeArray mutVals ix (Just val))
+            P.consumption (P.skipSpace *> P.any) >>= \case
+              125 -> do -- close curly brace
+                P.consumption P.skipSpace
+                P.mutation (PSAM.unsafeFreezeSmallMaybeArray mutVals)
+              44 -> go -- comma
+              _ -> P.consumption P.failure
+      go
+    _ -> P.failure
+  case PSAM.sequenceSmallMaybeArray maybeVals of
+    Nothing -> do -- a value was missing
+      let ix = findNothing maybeVals
+      let key = PM.indexUnliftedArray keys ix
+      P.failureDocumented (ErrorMissing key)
+    Just confirmed ->
+      return (unsafeFromAny (unsafeApplyFunction f n confirmed))
+
+unsafeApplyFunction ::
+     Any -- untyped function
+  -> Int -- arity of function
+  -> SmallArray Any -- arguments
+  -> Any 
+unsafeApplyFunction f n args = case n of
+  0 -> f
+  1 ->
+    let (# a1 #) = PM.indexSmallArray## args 0
+     in unsafeFromAny f a1
+  2 ->
+    let (# a1 #) = PM.indexSmallArray## args 0
+        (# a2 #) = PM.indexSmallArray## args 1
+     in unsafeFromAny f a1 a2
+  _ -> error "figure out more arguments"
+
+-- If no Nothing is found, this returns (-1)
+findNothing :: SmallMaybeArray a -> Int
+findNothing a = go 0 where
+  go !ix = if ix < PSAM.sizeofSmallMaybeArray a
+    then case PSAM.indexSmallMaybeArray a ix of
+      Nothing -> ix
+      Just _ -> go (ix + 1)
+    else (-1)
+
 decodingToParser :: JsonDecoding a -> Parser Error Context a
 decodingToParser = \case
   JsonDecodingRaw f -> do
@@ -147,6 +273,7 @@ decodingToParser = \case
     P.byte (charToWord8 ']')
     P.skipSpace
     pure vals 
+  JsonDecodingObject fmd -> fastMapDecodingToParser fmd
   JsonDecodingGroundArray g -> case g of
     GroundWord ->
          P.skipSpace
@@ -167,7 +294,7 @@ decodingToParser = \case
 
 valueParser :: Parser e c Value
 valueParser = do
-  skipSpace
+  P.skipSpace
   x <- P.any
   v <- case x of
     116 -> P.byte (charToWord8 'r')
@@ -242,7 +369,7 @@ valueParser = do
 -- text.
 stringParserAfterQuote :: Parser e c Text
 stringParserAfterQuote = do
-  Bytes arr off len <- takeBytesUntilByteConsume (charToWord8 '"')
+  Bytes arr off len <- P.takeBytesUntilByteConsume (charToWord8 '"')
   pure (Text arr (fromIntegral off) len)
 
 

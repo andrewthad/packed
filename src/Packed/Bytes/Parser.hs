@@ -1,7 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE BinaryLiterals #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeInType #-}
@@ -61,12 +63,14 @@ module Packed.Bytes.Parser
   , foldIntersperseByte
   , trie
   , triePure
-  , trieReader
-  , trieReaderState
-  , trieReaderState_
+  -- , trieReader
+  -- , trieReaderState
+  -- , trieReaderState_
   , failure
+  , failureDocumented
     -- * Context
   , scoped
+  , modifyContext
     -- * Stateful
   , statefully
   , consumption
@@ -75,13 +79,19 @@ module Packed.Bytes.Parser
   , skipSpace
   , endOfLine
   , takeBytesUntilEndOfLineConsume
+  , charUtf8
   ) where
 
+import Prelude hiding (any,replicate)
+
 import Control.Applicative
+import Control.Monad (when,(>=>))
 import Control.Monad.ST (runST)
+import Data.Bits ((.&.),(.|.),unsafeShiftL,xor)
 import Data.Char (ord)
 import Data.Primitive (Prim,Array(..),MutableArray(..),PrimArray(..))
 import Data.Semigroup (Semigroup)
+import GHC.Base (Char(C#))
 import GHC.Int (Int(I#))
 import GHC.ST (ST(..))
 import GHC.Types (TYPE,RuntimeRep(..),IO(..))
@@ -91,7 +101,6 @@ import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Small (ByteArray(..))
 import Packed.Bytes.Stream.ST (ByteStream(..))
 import Packed.Bytes.Trie (Trie)
-import Prelude hiding (any,replicate)
 
 import qualified Control.Monad
 import qualified Data.Primitive as PM
@@ -106,10 +115,10 @@ import qualified Packed.Bytes.Window as BAW
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
   (<#),(==#),(>=#),(*#),
   MutableArray#,MutableByteArray#,writeArray#,unsafeFreezeArray#,newArray#,
-  unsafeFreezeByteArray#,newByteArray#,runRW#,
-  plusWord#,timesWord#,indexWord8Array#,eqWord#,fromListN,andI#,
+  unsafeFreezeByteArray#,newByteArray#,
+  plusWord#,timesWord#,indexWord8Array#,eqWord#,andI#,
   clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,quotInt#,
-  shrinkMutableByteArray#,copyMutableByteArray#,
+  shrinkMutableByteArray#,copyMutableByteArray#,chr#,
   RealWorld)
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
@@ -306,7 +315,7 @@ withAtLeast :: forall e c s (r :: RuntimeRep) (b :: TYPE r).
   -> (# State# s, Result# e c s r b #)
 {-# INLINE withAtLeast #-}
 withAtLeast (# (# #) | #) _ s0 g _ = g (# (# #) | #) s0
-withAtLeast (# | (# bytes0@(# arr0,off0,len0 #), stream0 #) #) n s0 g f = case len0 >=# n of
+withAtLeast (# | (# bytes0@(# _,_,len0 #), stream0 #) #) n s0 g f = case len0 >=# n of
   1# -> f bytes0 stream0 s0
   _ -> g (# | (# bytes0, stream0 #) #) s0
 
@@ -973,80 +982,62 @@ die fun = error $ "Packed.Bytes.Parser." ++ fun
 -- > Write Example
 --
 trie :: Trie (Parser e c a) -> Parser e c a
-trie (Trie.Trie node) = go node where
-  go :: Trie.Node d (Parser e c b) -> Parser e c b
-  go Trie.NodeEmpty = failure
-  go (Trie.NodeValueNil p) = p
-  go (Trie.NodeRun (Trie.Run arr n)) = do
-    bytes (B.fromByteArray arr)
-    go n
-  go (Trie.NodeBranch arr) = do
-    b <- any
-    go (PM.indexArray arr (word8ToInt b))
-  go (Trie.NodeValueRun p _) = p
-  go (Trie.NodeValueBranch p _) = p
+trie = triePure >=> id
 
 triePure :: Trie a -> Parser e c a
-triePure (Trie.Trie node) = go node where
-  go :: Trie.Node d b -> Parser e c b
-  go Trie.NodeEmpty = failure
-  go (Trie.NodeValueNil p) = pure p
-  go (Trie.NodeRun (Trie.Run arr n)) = do
-    bytes (B.fromByteArray arr)
-    go n
-  go (Trie.NodeBranch arr) = do
-    b <- any
-    go (PM.indexArray arr (word8ToInt b))
-  go (Trie.NodeValueRun p _) = pure p
-  go (Trie.NodeValueBranch p _) = pure p
+triePure t = do
+  e <- Trie.lookupM any (bytes . B.fromByteArray) (return True) return t
+  case e of
+    Left _ -> failure
+    Right x -> return x
 
--- | Variant of 'trie' whose parsers accept an environment. This is helpful
--- in situations where the user needs to ensure that the 'Trie' used by
--- the parser is a CAF.
-trieReader :: Trie (r -> Parser e c a) -> r -> Parser e c a
-trieReader (Trie.Trie node) = go node where
-  go :: forall e c d b t. Trie.Node d (t -> Parser e c b) -> t -> Parser e c b
-  go Trie.NodeEmpty _ = failure
-  go (Trie.NodeValueNil p) r = p r
-  go (Trie.NodeRun (Trie.Run arr n)) r = do
-    bytes (B.fromByteArray arr)
-    go n r
-  go (Trie.NodeBranch arr) r = do
-    b <- any
-    go (PM.indexArray arr (word8ToInt b)) r
-  go (Trie.NodeValueRun p _) r = p r
-  go (Trie.NodeValueBranch p _) r = p r
-
--- | Variant of 'trie' whose parsers modify state and accept an environment.
-trieReaderState :: Trie (r -> s -> Parser e c (s, a)) -> r -> s -> Parser e c (s,a)
-trieReaderState (Trie.Trie node) = go node where
-  go :: forall e c d b r' s'. Trie.Node d (r' -> s' -> Parser e c (s',b)) -> r' -> s' -> Parser e c (s',b)
-  go Trie.NodeEmpty _ _ = failure
-  go (Trie.NodeValueNil p) r s = p r s
-  go (Trie.NodeRun (Trie.Run arr n)) r s = do
-    bytes (B.fromByteArray arr)
-    go n r s
-  go (Trie.NodeBranch arr) r s = do
-    b <- any
-    go (PM.indexArray arr (word8ToInt b)) r s
-  go (Trie.NodeValueRun p _) r s = p r s
-  go (Trie.NodeValueBranch p _) r s = p r s
-
--- | Variant of 'trie' whose parsers modify state and accept an environment.
--- This variant lacks a result type. It only modifies the state.
-trieReaderState_ :: Trie (r -> s -> Parser e c s) -> r -> s -> Parser e c s
-trieReaderState_ (Trie.Trie node) = go node where
-  go :: forall e c d r' s'. Trie.Node d (r' -> s' -> Parser e c s') -> r' -> s' -> Parser e c s'
-  go Trie.NodeEmpty _ _ = failure
-  go (Trie.NodeValueNil p) r s = p r s
-  go (Trie.NodeRun (Trie.Run arr n)) r s = do
-    bytes (B.fromByteArray arr)
-    go n r s
-  go (Trie.NodeBranch arr) r s = do
-    b <- any
-    go (PM.indexArray arr (word8ToInt b)) r s
-  go (Trie.NodeValueRun p _) r s = p r s
-  go (Trie.NodeValueBranch p _) r s = p r s
+-- -- | Variant of 'trie' whose parsers accept an environment. This is helpful
+-- -- in situations where the user needs to ensure that the 'Trie' used by
+-- -- the parser is a CAF.
+-- trieReader :: Trie (r -> Parser e c a) -> r -> Parser e c a
+-- trieReader (Trie.Trie node) = go node where
+--   go :: forall e c d b t. Trie.Node d (t -> Parser e c b) -> t -> Parser e c b
+--   go Trie.NodeEmpty _ = failure
+--   go (Trie.NodeValueNil p) r = p r
+--   go (Trie.NodeRun (Trie.Run arr n)) r = do
+--     bytes (B.fromByteArray arr)
+--     go n r
+--   go (Trie.NodeBranch arr) r = do
+--     b <- any
+--     go (PM.indexArray arr (word8ToInt b)) r
+--   go (Trie.NodeValueRun p _) r = p r
+--   go (Trie.NodeValueBranch p _) r = p r
+-- 
+-- -- | Variant of 'trie' whose parsers modify state and accept an environment.
+-- trieReaderState :: Trie (r -> s -> Parser e c (s, a)) -> r -> s -> Parser e c (s,a)
+-- trieReaderState (Trie.Trie node) = go node where
+--   go :: forall e c d b r' s'. Trie.Node d (r' -> s' -> Parser e c (s',b)) -> r' -> s' -> Parser e c (s',b)
+--   go Trie.NodeEmpty _ _ = failure
+--   go (Trie.NodeValueNil p) r s = p r s
+--   go (Trie.NodeRun (Trie.Run arr n)) r s = do
+--     bytes (B.fromByteArray arr)
+--     go n r s
+--   go (Trie.NodeBranch arr) r s = do
+--     b <- any
+--     go (PM.indexArray arr (word8ToInt b)) r s
+--   go (Trie.NodeValueRun p _) r s = p r s
+--   go (Trie.NodeValueBranch p _) r s = p r s
+-- 
+-- -- | Variant of 'trie' whose parsers modify state and accept an environment.
+-- -- This variant lacks a result type. It only modifies the state.
+-- trieReaderState_ :: Trie (r -> s -> Parser e c s) -> r -> s -> Parser e c s
+-- trieReaderState_ (Trie.Trie node) = go node where
+--   go :: forall e c d r' s'. Trie.Node d (r' -> s' -> Parser e c s') -> r' -> s' -> Parser e c s'
+--   go Trie.NodeEmpty _ _ = failure
+--   go (Trie.NodeValueNil p) r s = p r s
+--   go (Trie.NodeRun (Trie.Run arr n)) r s = do
+--     bytes (B.fromByteArray arr)
+--     go n r s
+--   go (Trie.NodeBranch arr) r s = do
+--     b <- any
+--     go (PM.indexArray arr (word8ToInt b)) r s
+--   go (Trie.NodeValueRun p _) r s = p r s
+--   go (Trie.NodeValueBranch p _) r s = p r s
 
 
 createArray
@@ -1270,11 +1261,17 @@ endOfLine = do
 failure :: Parser e c a
 failure = Parser (ParserLevity (\c m s -> (# s, (# m, (# Nothing | #), c #) #)))
 
--- | Modify the context used for errors. The modification is not
--- reset or undone at any point.
+failureDocumented :: e -> Parser e c a
+failureDocumented e = Parser (ParserLevity (\c m s -> (# s, (# m, (# Just e | #), c #) #)))
+
+-- | Modify the context used for errors. This is strict in the
+-- context. The modification is not reset or undone at any point.
+-- This is useful if you are using the context as a return value.
 modifyContext :: (c -> c) -> Parser e c a -> Parser e c a
 modifyContext f (Parser (ParserLevity p)) = Parser $ ParserLevity
-  $ \c0 leftovers0 s0 -> p (f c0) leftovers0 s0
+  $ \c0 leftovers0 s0 ->
+      let !c1 = f c0
+       in p c1 leftovers0 s0
 
 -- | Modify the context used for errors. If the parser given as
 -- an argument completes, the context is reset.
@@ -1290,3 +1287,76 @@ word8ToInt = fromIntegral
 charToWord8 :: Char -> Word8
 charToWord8 = fromIntegral . ord
 
+charUtf8 :: Parser e c Char
+charUtf8 = do
+  a <- any
+  if | oneByteChar a -> return (word8ToChar a)
+     | twoByteChar a -> do
+         b <- any
+         when (not (followingByte b)) failure
+         return (charFromTwoBytes a b)
+     | threeByteChar a -> do
+         b <- any
+         when (not (followingByte b)) failure
+         c <- any
+         when (not (followingByte c)) failure
+         let w = codepointFromThreeBytes a b c
+         return (if surrogate w then '\xFFFD' else unsafeWordToChar w)
+     | fourByteChar a -> do
+         b <- any
+         when (not (followingByte b)) failure
+         c <- any
+         when (not (followingByte c)) failure
+         d <- any
+         when (not (followingByte d)) failure
+         return (charFromFourBytes a b c d)
+     | otherwise -> failure
+
+word8ToChar :: Word8 -> Char
+word8ToChar (W8# w) = C# (chr# (word2Int# w))
+
+unsafeWordToChar :: Word -> Char
+unsafeWordToChar (W# w) = C# (chr# (word2Int# w))
+
+followingByte :: Word8 -> Bool
+followingByte !w = xor w 0b01000000 .&. 0b11000000 == 0b11000000
+
+oneByteChar :: Word8 -> Bool
+oneByteChar !w = w .&. 0b10000000 == 0
+
+twoByteChar :: Word8 -> Bool
+twoByteChar !w = w .&. 0b11100000 == 0b11000000
+
+threeByteChar :: Word8 -> Bool
+threeByteChar !w = w .&. 0b11110000 == 0b11100000
+
+fourByteChar :: Word8 -> Bool
+fourByteChar !w = w .&. 0b11111000 == 0b11110000
+
+charFromTwoBytes :: Word8 -> Word8 -> Char
+charFromTwoBytes w1 w2 = unsafeWordToChar $
+  unsafeShiftL (word8ToWord w1 .&. 0b00011111) 6 .|. 
+  (word8ToWord w2 .&. 0b00111111)
+
+codepointFromThreeBytes :: Word8 -> Word8 -> Word8 -> Word
+codepointFromThreeBytes w1 w2 w3 = 
+  unsafeShiftL (word8ToWord w1 .&. 0b00001111) 12 .|. 
+  unsafeShiftL (word8ToWord w2 .&. 0b00111111) 6 .|. 
+  (word8ToWord w3 .&. 0b00111111)
+
+charFromFourBytes :: Word8 -> Word8 -> Word8 -> Word8 -> Char
+charFromFourBytes w1 w2 w3 w4 = unsafeWordToChar $
+  unsafeShiftL (word8ToWord w1 .&. 0b00000111) 18 .|. 
+  unsafeShiftL (word8ToWord w2 .&. 0b00111111) 12 .|. 
+  unsafeShiftL (word8ToWord w3 .&. 0b00111111) 6 .|. 
+  (word8ToWord w4 .&. 0b00111111)
+
+
+surrogate :: Word -> Bool
+surrogate codepoint = codepoint >= 0xD800 && codepoint < 0xE000
+
+-- charUtf8# :: ParserLevity 'CharRep e c Char#
+-- charUtf8# =
+
+-- jsonString :: Parser e c Text
+-- jsonString = Parser $ ParserLevity $ \c0 leftovers0 s0

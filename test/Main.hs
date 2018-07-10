@@ -22,8 +22,8 @@ import GHC.Exts (Int#,fromList)
 import GHC.Int (Int(I#))
 import GHC.Types
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
-import Hedgehog.Gen (shuffle,list,enumBounded,int,frequency,choice,element,
-  integral,word8,word)
+import Hedgehog.Gen (shuffle,list,enumBounded,int,frequency,choice,element)
+import Hedgehog.Gen (integral,word8,word)
 import Hedgehog.Range (Range,linear)
 import Packed.Bytes (Bytes)
 import Packed.Bytes.Set (ByteSet)
@@ -58,6 +58,7 @@ import qualified Test.QuickCheck as QC
 -- tests in other modules
 import qualified Parser as Parser
 import qualified Json as Json
+import qualified ByteMap as ByteMap
 
 main :: IO ()
 main = defaultMain tests
@@ -82,7 +83,8 @@ tests = testGroup "Tests"
       [ testProperty "decimalWord" Parser.byteParserDecimalWord
       , testGroup "takeBytesUntilEndOfLineConsume"
         [ testProperty "accept" Parser.byteParserEolAccept
-        , testProperty "reject" Parser.byteParserEolReject
+        -- Uncomment this once trac 15300 is resolved
+        -- , testProperty "reject" Parser.byteParserEolReject
         ]
       , testGroup "Artificial"
         [ testProperty "alpha" Parser.byteParserArtificalA
@@ -103,6 +105,7 @@ tests = testGroup "Tests"
         [ testProperty "plain" Json.valueParserProperty
         ]
       ]
+    , testGroup "ByteMap" ByteMap.tests
     , testGroup "Trie"
       [ testProperty "map-like" trieMapLikeProp
       , testCase "fromList" trieFromListProp

@@ -22,15 +22,18 @@ module Packed.Bytes.Trie
   , fromList
   , fromListAppend
   , lookup
+  , lookupM
   -- * Internal
   , valid
   ) where
 
 import Prelude hiding (lookup)
 
-import Control.Monad.ST (runST)
+import Control.Monad.ST (runST,ST)
 import Data.Bifunctor (second)
+import Data.ByteMap (ByteMap)
 import Data.Kind (Type)
+import Data.Maybe (fromMaybe)
 import Data.Primitive hiding (fromList)
 import Data.Semigroup (Semigroup,First(..))
 import Data.Word (Word8)
@@ -38,6 +41,7 @@ import GHC.Exts (Int(I#),int2Word#)
 import GHC.Word (Word8(W8#))
 import Packed.Bytes (Bytes)
 
+import qualified Data.ByteMap as BM
 import qualified Data.Semigroup as SG
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Small as BA
@@ -65,10 +69,10 @@ type family AddChild (x :: Child) (y :: Child) :: Child where
 -- Every time an array of nodes shows up in here, that array must
 -- have length 256
 data Node :: Child -> Type -> Type where
-  NodeBranch :: {-# UNPACK #-} !(Array (Node 'ChildBranch a)) -> Node c a
+  NodeBranch :: {-# UNPACK #-} !(ByteMap (Node 'ChildBranch a)) -> Node c a
   NodeRun :: {-# UNPACK #-} !(Run a) -> Node 'ChildBranch a
   NodeValueNil :: !a -> Node c a
-  NodeValueBranch :: !a -> {-# UNPACK #-} !(Array (Node 'ChildBranch a)) -> Node c a
+  NodeValueBranch :: !a -> {-# UNPACK #-} !(ByteMap (Node 'ChildBranch a)) -> Node c a
   NodeValueRun :: !a -> {-# UNPACK #-} !(Run a) -> Node c a
   NodeEmpty :: Node 'ChildBranch a
 
@@ -240,7 +244,7 @@ firstDifferentByte a b = go 0
 appendRuns :: Semigroup a
   => Run a
   -> Run a
-  -> Either (Array (Node 'ChildBranch a)) (Run a)
+  -> Either (ByteMap (Node 'ChildBranch a)) (Run a)
 appendRuns (Run arr1 val1) (Run arr2 val2) =
   let !headByte1 = indexByteArray arr1 0 :: Word8
       !headByte2 = indexByteArray arr2 0 :: Word8
@@ -261,18 +265,18 @@ appendRuns (Run arr1 val1) (Run arr2 val2) =
                       LT -> Right (Run arr2 (prependRun (Run (dropByteArray diffIx arr1) val1) val2))
                       EQ -> Right $ Run
                         (initByteArray arr1)
-                        (NodeBranch (doubletonBranch (indexByteArray arr1 diffIx) (coerceNode val1) (indexByteArray arr2 diffIx) (coerceNode val2)))
+                        (NodeBranch (BM.doubleton (indexByteArray arr1 diffIx) (coerceNode val1) (indexByteArray arr2 diffIx) (coerceNode val2)))
                       GT -> Right $ Run 
                         (initByteArray arr1)
-                        (NodeBranch (doubletonBranch (indexByteArray arr1 diffIx) (coerceNode val1) (indexByteArray arr2 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr2) val2))))
+                        (NodeBranch (BM.doubleton (indexByteArray arr1 diffIx) (coerceNode val1) (indexByteArray arr2 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr2) val2))))
                     GT -> case compare remSz2 1 of
                       LT -> Right (Run arr2 (prependRun (Run (dropByteArray diffIx arr1) val1) val2))
                       EQ -> Right $ Run
                         (initByteArray arr2)
-                        (NodeBranch (doubletonBranch (indexByteArray arr1 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr1) val1)) (indexByteArray arr2 diffIx) (coerceNode val2)))
+                        (NodeBranch (BM.doubleton (indexByteArray arr1 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr1) val1)) (indexByteArray arr2 diffIx) (coerceNode val2)))
                       GT -> Right $ Run 
                         (takeByteArray diffIx arr1) -- this produces byte array of length > 0 since the head bytes must differ
-                        (NodeBranch (doubletonBranch (indexByteArray arr1 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr1) val1)) (indexByteArray arr2 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr2) val2))))
+                        (NodeBranch (BM.doubleton (indexByteArray arr1 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr1) val1)) (indexByteArray arr2 diffIx) (NodeRun (Run (dropByteArray (diffIx + 1) arr2) val2))))
             else Right (Run arr2 (prependRun (Run (tailByteArray arr1) val1) val2))
           else if sz2 > 1
             then Right (Run arr1 (appendRun val1 (Run (tailByteArray arr2) val2)))
@@ -284,70 +288,52 @@ appendRuns (Run arr1 val1) (Run arr2 val2) =
               !n2 = if sizeofByteArray arr2 > 1
                 then NodeRun (Run (tailByteArray arr2) val2)
                 else coerceNode val2
-           in Left (doubletonBranch headByte1 n1 headByte2 n2)
-
-doubletonBranch ::
-     Word8
-  -> Node 'ChildBranch a
-  -> Word8
-  -> Node 'ChildBranch a
-  -> Array (Node 'ChildBranch a)
-doubletonBranch !k1 !v1 !k2 !v2 = runST $ do
-  m <- newArray 256 NodeEmpty
-  writeArray m (word8ToInt k1) v1
-  writeArray m (word8ToInt k2) v2
-  unsafeFreezeArray m
+           in Left (BM.doubleton headByte1 n1 headByte2 n2)
 
 appendBranchRun :: Semigroup a
-  => Array (Node 'ChildBranch a)
+  => ByteMap (Node 'ChildBranch a)
   -> Run a
-  -> Array (Node 'ChildBranch a)
-appendBranchRun !xs (Run arr val) = runST $ do
-  m <- newArray 256 NodeEmpty
-  copyArray m 0 xs 0 256
-  let !headByte = indexByteArray arr 0 :: Word8
-      !headIx = word8ToInt headByte
-      !node = indexArray xs headIx
-  -- When the size of the byte array is 1, there are no more
-  -- bytes left in the run.
-  if sizeofByteArray arr > 1
-    then writeArray m headIx (appendNode node (NodeRun (Run (tailByteArray arr) val)))
-    else writeArray m headIx (appendNode node val)
-  unsafeFreezeArray m
+  -> ByteMap (Node 'ChildBranch a)
+appendBranchRun !xs (Run arr val) =
+  let headByte = indexByteArray arr 0 :: Word8
+      node = fromMaybe NodeEmpty (BM.lookup headByte xs)
+      -- When the size of the byte array is 1, there are no more
+      -- bytes left in the run.
+   in if sizeofByteArray arr > 1
+        then BM.insert headByte (appendNode node (NodeRun (Run (tailByteArray arr) val))) xs
+        else BM.insert headByte (appendNode node val) xs
+
+-- runST $ do
+--   m <- newArray 256 NodeEmpty
+--   copyArray m 0 xs 0 256
+--   let !headByte = indexByteArray arr 0 :: Word8
+--       !headIx = word8ToInt headByte
+--       !node = indexArray xs headIx
+--   -- When the size of the byte array is 1, there are no more
+--   -- bytes left in the run.
+--   if sizeofByteArray arr > 1
+--     then writeArray m headIx (appendNode node (NodeRun (Run (tailByteArray arr) val)))
+--     else writeArray m headIx (appendNode node val)
+--   unsafeFreezeArray m
 
 appendRunBranch :: Semigroup a
   => Run a
-  -> Array (Node 'ChildBranch a)
-  -> Array (Node 'ChildBranch a)
-appendRunBranch (Run arr val) !xs = runST $ do
-  m <- newArray 256 NodeEmpty
-  copyArray m 0 xs 0 256
-  let !headByte = indexByteArray arr 0 :: Word8
-      !headIx = word8ToInt headByte
-      !node = indexArray xs headIx
-  -- When the size of the byte array is 1, there are no more
-  -- bytes left in the run.
-  if sizeofByteArray arr > 1
-    then writeArray m headIx (appendNode (NodeRun (Run (tailByteArray arr) val)) node)
-    else writeArray m headIx (appendNode val node)
-  unsafeFreezeArray m
+  -> ByteMap (Node 'ChildBranch a)
+  -> ByteMap (Node 'ChildBranch a)
+appendRunBranch (Run arr val) !xs =
+  let headByte = indexByteArray arr 0 :: Word8
+      node = fromMaybe NodeEmpty (BM.lookup headByte xs)
+      -- When the size of the byte array is 1, there are no more
+      -- bytes left in the run.
+   in if sizeofByteArray arr > 1
+        then BM.insert headByte (appendNode (NodeRun (Run (tailByteArray arr) val)) node) xs
+        else BM.insert headByte (appendNode val node) xs
 
 appendBranches :: Semigroup a
-  => Array (Node 'ChildBranch a)
-  -> Array (Node 'ChildBranch a)
-  -> Array (Node 'ChildBranch a)
-appendBranches x y = runST $ do
-  m <- newArray 256 NodeEmpty
-  let go !ix = if ix < 256
-        then do
-          let a = indexArray x ix
-              b = indexArray y ix
-              !c = appendNode a b
-          writeArray m ix c
-          go (ix + 1)
-        else return ()
-  go 0
-  unsafeFreezeArray m
+  => ByteMap (Node 'ChildBranch a)
+  -> ByteMap (Node 'ChildBranch a)
+  -> ByteMap (Node 'ChildBranch a)
+appendBranches = BM.appendWith appendNode
 
 singleton :: Bytes -> a -> Trie a
 singleton !b !a = if B.length b > 0
@@ -374,11 +360,11 @@ lookup b0 (Trie node) = go b0 node where
   go :: Bytes -> Node c b -> Maybe b
   go !_ NodeEmpty = Nothing
   go !b1 (NodeValueNil v) = if B.null b1 then Just v else Nothing
-  go !b1 (NodeBranch arr) = case B.uncons b1 of
-    Just (!w,!b2) -> go b2 (indexArray arr (word8ToInt w))
+  go !b1 (NodeBranch bm) = case B.uncons b1 of
+    Just (!w,!b2) -> go b2 =<< BM.lookup w bm
     Nothing -> Nothing
-  go !b1 (NodeValueBranch v arr) = case B.uncons b1 of
-    Just (!w,!b2) -> go b2 (indexArray arr (word8ToInt w))
+  go !b1 (NodeValueBranch v bm) = case B.uncons b1 of
+    Just (!w,!b2) -> go b2 =<< BM.lookup w bm
     Nothing -> Just v
   go !b1 (NodeRun (Run arr n)) = 
     let arrSz = sizeofByteArray arr in
@@ -406,14 +392,48 @@ toList (Trie node) = go [] node
   go !xs (NodeValueNil v) = [(finalize xs,v)]
   go !xs (NodeRun (Run arr n)) = go (arr : xs) n
   go !xs (NodeValueRun v (Run arr n)) = (finalize xs, v) : go (arr : xs) n
-  go !xs (NodeBranch br) = ifoldMapArray (\ix -> go (BA.singleton (intToWord8 ix) : xs)) br
-  go !xs (NodeValueBranch v br) = (finalize xs, v) : ifoldMapArray (\ix -> go (BA.singleton (intToWord8 ix) : xs)) br
+  go !xs (NodeBranch br) = BM.foldMapWithKey (\ix -> go (BA.singleton ix : xs)) br
+  go !xs (NodeValueBranch v br) = (finalize xs, v) : BM.foldMapWithKey (\ix -> go (BA.singleton ix : xs)) br
 
 instance Semigroup a => Semigroup (Trie a) where
   (<>) = append
 
 instance Semigroup a => Monoid (Trie a) where
   mempty = empty
+
+-- | Note: This does not have the key shadowing problem.
+lookupM :: forall m a b. Monad m
+  => m Word8 -- ^ get next byte
+  -> (ByteArray -> m ()) -- ^ match many bytes 
+  -> m Bool -- ^ test if we are finished
+  -> (a -> m b) -- ^ convert trie value to result
+  -> Trie a
+  -> m (Either (Trie a) b)
+{-# INLINE lookupM #-}
+lookupM nextByte matchBytes testDone convert (Trie node) = go node where
+  go :: Node f a -> m (Either (Trie a) b)
+  go NodeEmpty = return (Left empty)
+  go (NodeValueNil p) = do
+    done <- testDone
+    if done
+      then fmap Right (convert p)
+      else return (Left (Trie (NodeValueNil p)))
+  go (NodeRun (Run arr n)) = matchBytes arr *> go n
+  go (NodeBranch bm) = do
+    b <- nextByte
+    go (fromMaybe NodeEmpty (BM.lookup b bm))
+  go (NodeValueRun p (Run arr n)) = do
+    done <- testDone
+    if done
+      then fmap Right (convert p)
+      else matchBytes arr *> go n
+  go (NodeValueBranch p bm) = do
+    done <- testDone
+    if done
+      then fmap Right (convert p)
+      else do
+        b <- nextByte
+        go (fromMaybe NodeEmpty (BM.lookup b bm))
 
 -- | Internal function for testing that invariants of the trie
 -- are satisfied. 

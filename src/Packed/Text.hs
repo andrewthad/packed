@@ -35,22 +35,25 @@ module Packed.Text
   ) where
 
 import Prelude hiding (map,take,drop,length)
+
+import Control.Monad.ST (ST,runST)
+import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
 import Data.Char (ord,chr)
 import Data.Primitive (MutableByteArray)
-import Packed.Bytes.Small (ByteArray)
-import GHC.Exts (Word#)
+import Data.String (IsString(fromString))
+import GHC.Base (Char(C#))
+import GHC.Exts (Word#,word2Int#,chr#)
 import GHC.Int (Int(I#))
 import GHC.Word (Word(W#),Word8(W8#))
-import Data.Bits ((.&.),(.|.),unsafeShiftR,unsafeShiftL,complement)
-import Control.Monad.ST (ST,runST)
 import Packed.Bytes (Bytes(..))
-import Data.String (IsString(fromString))
-import qualified Packed.Text.Window as TW
+import Packed.Bytes.Small (ByteArray)
+
 import qualified Data.Char
+import qualified Data.Primitive as PM
+import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Window as BAW
-import qualified Packed.Bytes as B
-import qualified Data.Primitive as PM
+import qualified Packed.Text.Window as TW
 
 data Text = Text
   {-# UNPACK #-} !ByteArray -- payload, normal UTF8-encoded text, nothing special like the unsliced variant
@@ -144,7 +147,7 @@ pack s = case TW.pack s of
 
 nextChar :: ByteArray -> Int -> (Int,Char)
 nextChar !arr !ix
-  | oneByteChar firstByte = (ix + 1, wordToChar (word8ToWord firstByte))
+  | oneByteChar firstByte = (ix + 1, unsafeWordToChar (word8ToWord firstByte))
   | twoByteChar firstByte =
       let !secondByte = BA.unsafeIndex arr (ix + 1)
        in (ix + 2, charFromTwoBytes firstByte secondByte)
@@ -206,18 +209,18 @@ threeByteChar :: Word8 -> Bool
 threeByteChar w = w .&. 0b11110000 == 0b11100000
 
 charFromTwoBytes :: Word8 -> Word8 -> Char
-charFromTwoBytes w1 w2 = wordToChar $
+charFromTwoBytes w1 w2 = unsafeWordToChar $
   unsafeShiftL (word8ToWord w1 .&. 0b00011111) 6 .|. 
   (word8ToWord w2 .&. 0b00111111)
 
 charFromThreeBytes :: Word8 -> Word8 -> Word8 -> Char
-charFromThreeBytes w1 w2 w3 = wordToChar $
+charFromThreeBytes w1 w2 w3 = unsafeWordToChar $
   unsafeShiftL (word8ToWord w1 .&. 0b00001111) 12 .|. 
   unsafeShiftL (word8ToWord w2 .&. 0b00111111) 6 .|. 
   (word8ToWord w3 .&. 0b00111111)
 
 charFromFourBytes :: Word8 -> Word8 -> Word8 -> Word8 -> Char
-charFromFourBytes w1 w2 w3 w4 = wordToChar $
+charFromFourBytes w1 w2 w3 w4 = unsafeWordToChar $
   unsafeShiftL (word8ToWord w1 .&. 0b00000111) 18 .|. 
   unsafeShiftL (word8ToWord w2 .&. 0b00111111) 12 .|. 
   unsafeShiftL (word8ToWord w3 .&. 0b00111111) 6 .|. 
@@ -267,8 +270,10 @@ wordToInt = fromIntegral
 unsafeWordToWord8 :: Word -> Word8
 unsafeWordToWord8 (W# w) = W8# w
 
-wordToChar :: Word -> Char
-wordToChar w = chr (fromIntegral w)
+-- Why is this unsafe? It is because there are some values
+-- the cannot be used for a Char
+unsafeWordToChar :: Word -> Char
+unsafeWordToChar (W# w) = C# (chr# (word2Int# w))
 
 empty :: Text
 empty = Text BA.empty 0 0
