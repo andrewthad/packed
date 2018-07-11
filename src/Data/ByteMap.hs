@@ -15,6 +15,7 @@ module Data.ByteMap
   , appendWith
   , toList
   , fromList
+  , foldrWithKey
   , foldMapWithKey
   ) where
 
