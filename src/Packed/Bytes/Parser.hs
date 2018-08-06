@@ -57,6 +57,7 @@ module Packed.Bytes.Parser
   -- , replicateIntersperseUntilEnd
   -- , replicateUntilByte
   , replicateIntersperseByte
+  , replicateIntersperseByteIndex#
   , replicateIntersperseMember
   , replicateIntersperseBytePrim
   , foldIntersperseParserUntilEnd
@@ -921,6 +922,49 @@ replicateIntersperseByte !(W8# sepByte) (Parser (ParserLevity f)) =
          in (# s1, (# (# | (# theBytes, stream #) #), (# | theArray #), c0 #) #)
     )
 
+-- | Replicate the parser as long as we encounter the specified byte
+-- after each run of the parser. If the stream ends where the separator
+-- is expected, this is considered a successful parse.
+replicateIntersperseByteIndex# :: forall e c a. (Int# -> c -> c) -> Word8 -> Parser e c a -> Parser e c (Array a)
+replicateIntersperseByteIndex# applyIndex !(W8# sepByte) (Parser (ParserLevity f)) =
+  Parser (ParserLevity (onceThenReplicateIndex# applyIndex (ParserLevity f) go))
+  where
+  go :: Int# -> Int# -> [a] -> c -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'LiftedRep (Array a) #)
+  go !ix !n !xs c0 !m !s0 = withNonEmpty m s0
+    (\s1 ->
+        let theArray :: Array a
+            !theArray = reverseArrayFromListN "replicateIntersperseByteIndex#" (I# n) xs
+         in (# s1, (# (# (# #) | #), (# | theArray #), c0 #) #)
+    )
+    (\theByte theBytes stream s1 -> case eqWord# theByte sepByte of
+      1# -> case f (applyIndex ix c0) (# | (# unsafeDrop# 1# theBytes, stream #) #) s1 of
+        (# s2, (# leftovers, res, c1 #) #) -> case res of
+          (# err | #) -> (# s2, (# leftovers, (# err | #), c1 #) #)
+          (# | !x #) -> go (ix +# 1#) (n +# 1# ) (x : xs) c0 leftovers s2
+      _ -> 
+        let theArray :: Array a
+            !theArray = reverseArrayFromListN "replicateIntersperseByteIndex#" (I# n) xs
+         in (# s1, (# (# | (# theBytes, stream #) #), (# | theArray #), c0 #) #)
+    )
+
+-- This succeeds if the input is empty. Also, this resets the context
+-- after successfully parsing the first element.
+onceThenReplicateIndex# ::
+     (Int# -> c -> c)
+  -> ParserLevity e c 'LiftedRep a
+  -> (Int# -> Int# -> [a] -> c -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'LiftedRep (Array a) #))
+  -> (c -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'LiftedRep (Array a) #))
+onceThenReplicateIndex# applyIndex (ParserLevity f) go c0 m s0 = withNonEmpty m s0
+  (\s1 -> (# s1, (# (# (# #) | #), (# | mempty #), c0 #) #)
+  )
+  (\_ theBytes stream s1 -> case f (applyIndex 0# c0) (# | (# theBytes, stream #) #) s1 of
+    (# s2, (# leftovers, res, c1 #) #) -> case res of
+      (# err | #) -> (# s2, (# leftovers, (# err | #), c1 #) #)
+      -- In the successful case, we reset the context to c0 instead of
+      -- using c1.
+      (# | !x #) -> go 1# 1# [x] c0 leftovers s2
+  )
+
 -- this succeeds if the input is empty 
 onceThenReplicate ::
      ParserLevity e c 'LiftedRep a
@@ -1280,9 +1324,6 @@ scoped f (Parser (ParserLevity p)) = Parser $ ParserLevity $ \c0 leftovers0 s0 -
   case p (f c0) leftovers0 s0 of
     (# s1, (# leftovers1, val@(# _ | #), c1 #) #) -> (# s1, (# leftovers1, val, c1 #) #)
     (# s1, (# leftovers1, val@(# | _ #), _ #) #) -> (# s1, (# leftovers1, val, c0 #) #)
-
-word8ToInt :: Word8 -> Int
-word8ToInt = fromIntegral
 
 charToWord8 :: Char -> Word8
 charToWord8 = fromIntegral . ord

@@ -106,6 +106,15 @@ unboxBuffer (Buffer marr ix) = (# unboxMutableByteArray marr, unboxInt ix #)
 boxBuffer :: Buffer# s -> Buffer s
 boxBuffer (# marr, ix #) = Buffer (MutableByteArray marr) (I# ix)
 
+-- foldMapToBuilder :: Foldable f
+--   => (a -> Builder)
+--   -> f a
+--   -> Builder
+-- foldMapToBuilder f = foldr _ 
+
+
+  
+
 -- | Strict left fold over the elements in the collection. Additionally,
 -- the fold serializes the builders produced as the collection is passed
 -- over.

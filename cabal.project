@@ -1,0 +1,3 @@
+packages: . ../primitive-maybe ../primitive ../primitive-checked
+with-compiler: /home/amartin/local/bin/ghc-8.6.0.20180803
+allow-newer: all

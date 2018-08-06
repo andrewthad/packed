@@ -7,14 +7,20 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 module Packed.Json.Decoding
-  ( JsonDecoding(..)
+  ( FromJson(..)
+  , JsonDecoding(..)
+  , JsonError(..)
   , Value(..)
+  , Context(..) -- stop exporting this
   , valueParser
   , decode
+  , decodeStreamST
+  , key
+  , object
   ) where
 
 import Control.Monad (forM_)
-import Control.Monad.ST (runST)
+import Control.Monad.ST (runST,ST)
 import Data.Char (ord)
 import Data.Coerce (coerce)
 import Data.Kind (Type)
@@ -24,10 +30,11 @@ import Data.Primitive.SmallArray.Maybe (SmallMaybeArray)
 import Data.Ratio ((%))
 import Data.Type.Coercion (Coercion(..))
 import Data.Word (Word8)
-import GHC.Exts (Any)
+import GHC.Exts (Any,Int#,Int(I#))
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Parser (Parser,PureResult(..))
 import Packed.Bytes.Small (ByteArray)
+import Packed.Bytes.Stream.ST (ByteStream)
 import Packed.Bytes.Trie (Trie)
 import Packed.Text (Text(..))
 import Packed.Text.Small (SmallText)
@@ -40,19 +47,22 @@ import qualified Data.Type.Coercion as C
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Parser as P
 import qualified Packed.Bytes.Trie as T
+import qualified Packed.Text.Small as TS
 
 data JsonError
   = JsonErrorIndex !Int !JsonError
-  | JsonErrorKey !SmallText !JsonError
+  | JsonErrorKey !Text !JsonError
   | JsonErrorMissing !SmallText
   | JsonErrorUndocumented
+  deriving (Show,Eq)
 
 data Error
   = ErrorMissing !SmallText
   | ErrorUndocumented
 
 data ContextUnit
-  = ContextUnitKey !SmallText
+  = ContextUnitKey !Text
+  | ContextUnitSmallKey !SmallText
   | ContextUnitIndex !Int
 
 data Context
@@ -68,6 +78,24 @@ data Value
   | ValueBool !Bool
   deriving (Show,Eq)
 
+class FromJson a where
+  fromJson :: JsonDecoding a
+
+instance FromJson Value where
+  fromJson = JsonDecodingRaw Just
+
+instance FromJson Int where
+  fromJson = JsonDecodingGround GroundInt
+
+instance FromJson Word where
+  fromJson = JsonDecodingGround GroundWord
+
+instance FromJson Bool where
+  fromJson = JsonDecodingBool
+
+instance FromJson Text where
+  fromJson = JsonDecodingText
+
 data JsonDecoding :: Type -> Type where
   JsonDecodingRaw :: (Value -> Maybe a) -> JsonDecoding a
   JsonDecodingArray :: JsonDecoding a -> JsonDecoding (Array a)
@@ -75,6 +103,8 @@ data JsonDecoding :: Type -> Type where
   JsonDecodingGroundArray :: Ground a -> JsonDecoding (PrimArray a)
   JsonDecodingCoerce :: Coercion a b -> JsonDecoding b -> JsonDecoding a
   JsonDecodingGround :: Ground a -> JsonDecoding a
+  JsonDecodingBool :: JsonDecoding Bool
+  JsonDecodingText :: JsonDecoding Text
   JsonDecodingObject :: FastMapDecoding a -> JsonDecoding a
   -- The object constructor is an extremely efficent way to decode a json
   -- object to a record type without building a hashmap as an intermediate
@@ -122,6 +152,18 @@ data MapDecoding a where
     -> !(MapDecoding (a -> b)) -- next decoding
     -> MapDecoding b
 
+instance Functor MapDecoding where
+  fmap f (MapDecodingPure a) = MapDecodingPure (f a)
+  fmap f (MapDecodingApply a b c d y) = MapDecodingApply a b c d ((f .) <$> y)
+
+instance Applicative MapDecoding where
+  pure = MapDecodingPure
+  MapDecodingPure f <*> y = fmap f y
+  MapDecodingApply a b c d y <*> z = MapDecodingApply a b c d (flip <$> y <*> z)
+
+key :: SmallText -> JsonDecoding a -> Maybe a -> MapDecoding a
+key theKey dec mdef = MapDecodingApply theKey (TS.encodeUtf8 theKey) dec mdef (MapDecodingPure id)
+
 data FastMapDecoding a = FastMapDecoding
   !Int -- arity of function of type X -> Y -> ... -> a
   Any -- the function of unknown arity whose return type is a
@@ -131,28 +173,38 @@ data FastMapDecoding a = FastMapDecoding
 
 data Indexed a = Indexed !Int a
 
+object :: MapDecoding a -> JsonDecoding a
+object = JsonDecodingObject . accelerateMapDecoding
+
+lengthMapDecoding :: MapDecoding a -> Int
+lengthMapDecoding = go 0 where
+  go :: Int -> MapDecoding b -> Int
+  go !n (MapDecodingPure _) = n
+  go !n (MapDecodingApply _ _ _ _ xs) = go (n + 1) xs
+
 -- Internally, this function must use unsafeCoerce.
 accelerateMapDecoding :: MapDecoding a -> FastMapDecoding a
-accelerateMapDecoding = unsafeFromAnyFastMapDecoding . go [] [] [] 0 where
+accelerateMapDecoding md = unsafeFromAnyFastMapDecoding (go [] [] [] (sz - 1) md) where
+  sz = lengthMapDecoding md
   go :: [(Bytes,Indexed (JsonDecoding Any))] -- decodings
      -> [Indexed Any] -- default values
      -> [SmallText] -- key names
      -> Int -- function argument count
      -> MapDecoding b
      -> FastMapDecoding Any
-  go !decs !defs !keys !n (MapDecodingApply t b dec mdef xs) = go
-    ((B.fromByteArray b,Indexed n (unsafeToAnyJsonDecoding dec)) : decs)
-    (maybe defs (\y -> Indexed n (unsafeToAny y) : defs) mdef)
+  go !decs !defs !keys !ix (MapDecodingApply t b dec mdef xs) = go
+    ((B.fromByteArray b,Indexed ix (unsafeToAnyJsonDecoding dec)) : decs)
+    (maybe defs (\y -> Indexed ix (unsafeToAny y) : defs) mdef)
     (t : keys)
-    (n + 1)
+    (ix - 1)
     xs
-  go !decs !defs !keys !n (MapDecodingPure f) =
+  go !decs !defs !keys !_ (MapDecodingPure f) =
     let defArray = runST $ do
-          marr <- PSAM.newSmallMaybeArray n Nothing
-          forM_ defs $ \(Indexed ix v) -> do
-            PSAM.writeSmallMaybeArray marr ix (Just v)
+          marr <- PSAM.newSmallMaybeArray sz Nothing
+          forM_ defs $ \(Indexed ixV v) -> do
+            PSAM.writeSmallMaybeArray marr ixV (Just v)
           PSAM.unsafeFreezeSmallMaybeArray marr
-     in FastMapDecoding n (unsafeToAny f) (T.fromList decs) defArray (PM.unliftedArrayFromList (L.reverse keys))
+     in FastMapDecoding sz (unsafeToAny f) (T.fromList decs) defArray (PM.unliftedArrayFromList (L.reverse keys))
 
 unsafeFromAnyFastMapDecoding :: FastMapDecoding Any -> FastMapDecoding a
 unsafeFromAnyFastMapDecoding = unsafeCoerce
@@ -173,6 +225,13 @@ decode decoding bytes = do
         Right a -> Right a
         Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m))
 
+decodeStreamST :: JsonDecoding a -> ByteStream s -> ST s (Either (JsonError,Maybe (P.Leftovers s)) a)
+decodeStreamST decoding bytes = do
+  P.Result mleftovers e c <- P.parseStreamST bytes ContextNil (decodingToParser decoding <* P.endOfInput)
+  return $ case e of
+    Right a -> Right a
+    Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m),mleftovers)
+
 prepareContextError :: Context -> Error -> JsonError
 prepareContextError c e = go c (prepareError e) where
   go ContextNil !j = j
@@ -180,12 +239,12 @@ prepareContextError c e = go c (prepareError e) where
 
 layerContextUnit :: ContextUnit -> JsonError -> JsonError
 layerContextUnit u je = case u of
-  ContextUnitKey key -> JsonErrorKey key je
+  ContextUnitKey theKey -> JsonErrorKey theKey je
   ContextUnitIndex ix -> JsonErrorIndex ix je
 
 prepareError :: Error -> JsonError
 prepareError = \case
-  ErrorMissing key -> JsonErrorMissing key
+  ErrorMissing theKey -> JsonErrorMissing theKey
   ErrorUndocumented -> JsonErrorUndocumented
 
 -- This only behaves correctly when there are no
@@ -217,21 +276,22 @@ fastMapDecodingToParser (FastMapDecoding n f decs defs keys) = do
             -- Currently, we do not correctly skip over unneeded keys.
             -- This must be fixed
             Indexed ix valParser <- P.consumption (P.triePure decs)
-            val <- P.consumption (P.byte (charToWord8 '"') *> P.skipSpace *> P.byte (charToWord8 ':') *> P.skipSpace *> decodingToParser valParser)
+            let textualKey = PM.indexUnliftedArray keys ix
+            val <- P.consumption (P.byte (charToWord8 '"') *> P.skipSpace *> P.byte (charToWord8 ':') *> P.scoped (contextConsSmallKey textualKey) (decodingToParser valParser) <* P.skipSpace)
             P.mutation (PSAM.writeSmallMaybeArray mutVals ix (Just val))
-            P.consumption (P.skipSpace *> P.any) >>= \case
+            P.consumption P.any >>= \case
               125 -> do -- close curly brace
                 P.consumption P.skipSpace
                 P.mutation (PSAM.unsafeFreezeSmallMaybeArray mutVals)
-              44 -> go -- comma
+              44 -> P.consumption (P.skipSpace *> P.byte (charToWord8 '"')) *> go -- comma
               _ -> P.consumption P.failure
       go
     _ -> P.failure
   case PSAM.sequenceSmallMaybeArray maybeVals of
     Nothing -> do -- a value was missing
       let ix = findNothing maybeVals
-      let key = PM.indexUnliftedArray keys ix
-      P.failureDocumented (ErrorMissing key)
+      let theKey = PM.indexUnliftedArray keys ix
+      P.failureDocumented (ErrorMissing theKey)
     Just confirmed ->
       return (unsafeFromAny (unsafeApplyFunction f n confirmed))
 
@@ -249,6 +309,11 @@ unsafeApplyFunction f n args = case n of
     let (# a1 #) = PM.indexSmallArray## args 0
         (# a2 #) = PM.indexSmallArray## args 1
      in unsafeFromAny f a1 a2
+  3 ->
+    let (# a1 #) = PM.indexSmallArray## args 0
+        (# a2 #) = PM.indexSmallArray## args 1
+        (# a3 #) = PM.indexSmallArray## args 2
+     in unsafeFromAny f a1 a2 a3
   _ -> error "figure out more arguments"
 
 -- If no Nothing is found, this returns (-1)
@@ -258,7 +323,7 @@ findNothing a = go 0 where
     then case PSAM.indexSmallMaybeArray a ix of
       Nothing -> ix
       Just _ -> go (ix + 1)
-    else (-1)
+    else error "Packed.Json.Decoding.findNothing: failed"
 
 decodingToParser :: JsonDecoding a -> Parser Error Context a
 decodingToParser = \case
@@ -266,14 +331,33 @@ decodingToParser = \case
     v <- valueParser
     maybe P.failure pure (f v)
   JsonDecodingCoerce Coercion d -> coerce (decodingToParser d)
+  JsonDecodingBool -> (P.skipSpace *> P.any) >>= \case
+    116 -> P.byte (charToWord8 'r')
+        *> P.byte (charToWord8 'u')
+        *> P.byte (charToWord8 'e')
+        *> pure True
+        <* P.skipSpace
+    102 -> P.byte (charToWord8 'a')
+        *> P.byte (charToWord8 'l')
+        *> P.byte (charToWord8 's')
+        *> P.byte (charToWord8 'e')
+        *> pure False
+        <* P.skipSpace
+    _ -> P.failure
+  JsonDecodingText ->
+    P.skipSpace *> P.byte (charToWord8 '"') *> stringParserAfterQuote <* P.skipSpace
   JsonDecodingArray d -> do
     P.skipSpace
     P.byte (charToWord8 '[')
-    vals <- P.replicateIntersperseByte (charToWord8 ',') (decodingToParser d)
+    vals <- P.replicateIntersperseByteIndex# contextConsIndex (charToWord8 ',') (decodingToParser d)
     P.byte (charToWord8 ']')
     P.skipSpace
     pure vals 
   JsonDecodingObject fmd -> fastMapDecodingToParser fmd
+  JsonDecodingGround g -> case g of
+    GroundWord ->
+      -- Fix this. It needs to handle things with exponents. 
+      P.skipSpace *> P.decimalWord <* P.skipSpace
   JsonDecodingGroundArray g -> case g of
     GroundWord ->
          P.skipSpace
@@ -292,7 +376,7 @@ decodingToParser = \case
       <* P.byte (charToWord8 ']')
       <* P.skipSpace
 
-valueParser :: Parser e c Value
+valueParser :: Parser e Context Value
 valueParser = do
   P.skipSpace
   x <- P.any
@@ -314,17 +398,17 @@ valueParser = do
       s <- stringParserAfterQuote
       pure (ValueString s)
     91 -> do
-      vals <- P.replicateIntersperseByte (charToWord8 ',') valueParser
+      vals <- P.replicateIntersperseByteIndex# contextConsIndex (charToWord8 ',') valueParser
       P.byte (charToWord8 ']')
       pure (ValueArray vals) 
     123 -> do
       vals <- P.replicateIntersperseByte (charToWord8 ',') $ do
         P.skipSpace
         P.byte (charToWord8 '"')
-        key <- stringParserAfterQuote
+        theKey <- stringParserAfterQuote
         P.byte (charToWord8 ':')
-        val <- valueParser
-        pure (key,val) 
+        val <- P.scoped (contextConsKey theKey) valueParser
+        pure (theKey,val) 
       P.skipSpace
       P.byte (charToWord8 '}')
       pure (ValueObject vals)
@@ -429,5 +513,13 @@ exponentAfterE = do
   k <- parserPositiveInteger (fromIntegral i)
   pure (if isPositive then k else negate k)
   
+contextConsIndex :: Int# -> Context -> Context
+contextConsIndex i = ContextCons (ContextUnitIndex (I# i))
+
+contextConsKey :: Text -> Context -> Context
+contextConsKey theKey = ContextCons (ContextUnitKey theKey)
+
+contextConsSmallKey :: SmallText -> Context -> Context
+contextConsSmallKey theKey = ContextCons (ContextUnitSmallKey theKey)
 
 

@@ -84,7 +84,7 @@ tests = testGroup "Tests"
       , testGroup "takeBytesUntilEndOfLineConsume"
         [ testProperty "accept" Parser.byteParserEolAccept
         -- Uncomment this once trac 15300 is resolved
-        -- , testProperty "reject" Parser.byteParserEolReject
+        , testProperty "reject" Parser.byteParserEolReject
         ]
       , testGroup "Artificial"
         [ testProperty "alpha" Parser.byteParserArtificalA
@@ -103,6 +103,16 @@ tests = testGroup "Tests"
         ]
       , testGroup "JSON"
         [ testProperty "plain" Json.valueParserProperty
+        , testGroup "context"
+          [ testCase "A" Json.contextA
+          ]
+        , testGroup "object"
+          [ testProperty "A" Json.objectA
+          , testProperty "B" Json.objectB
+          , testProperty "C" Json.objectC
+          , testProperty "D" Json.objectD
+          , testProperty "E" Json.objectE
+          ]
         ]
       ]
     , testGroup "ByteMap" ByteMap.tests
@@ -479,7 +489,6 @@ trieDictionaryProp = property $ do
 
 trieFromListProp :: Assertion
 trieFromListProp = do
-  hFlush stdout
   assertEqual "string" (Just (Left True)) (Trie.lookup (s2b "STRING: ") snmptradpTypes)
   assertEqual "integer" (Just (Right 55)) (Trie.lookup (s2b "INTEGER: ") snmptradpTypes)
   assertEqual "oid" (Just (Left False)) (Trie.lookup (s2b "OID: ") snmptradpTypes)
