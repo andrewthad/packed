@@ -6,6 +6,7 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeInType #-}
 {-# LANGUAGE UnboxedSums #-}
 {-# LANGUAGE UnboxedTuples #-}
@@ -32,6 +33,9 @@ module Packed.Bytes.Parser
   , decimalWord
   , decimalWordStarting
   , decimalDigitWord
+  , bigEndianWord32
+  , bigEndianWord64
+  , bigEndianFloat
   , optionalPlusMinus
   , optionalDecimalDigitWord
   , takeBytesWhileMember
@@ -53,6 +57,7 @@ module Packed.Bytes.Parser
   , endOfInput
   , isEndOfInput
   , replicate
+  , replicateIndex#
   , replicateUntilEnd
   -- , replicateIntersperseUntilEnd
   -- , replicateUntilByte
@@ -72,6 +77,7 @@ module Packed.Bytes.Parser
     -- * Context
   , scoped
   , modifyContext
+  , setContext
     -- * Stateful
   , statefully
   , consumption
@@ -88,6 +94,7 @@ import Prelude hiding (any,replicate)
 import Control.Applicative
 import Control.Monad (when,(>=>))
 import Control.Monad.ST (runST)
+import Control.Monad.Primitive (PrimMonad(..))
 import Data.Bits ((.&.),(.|.),unsafeShiftL,xor)
 import Data.Char (ord)
 import Data.Primitive (Prim,Array(..),MutableArray(..),PrimArray(..))
@@ -96,7 +103,8 @@ import GHC.Base (Char(C#))
 import GHC.Int (Int(I#))
 import GHC.ST (ST(..))
 import GHC.Types (TYPE,RuntimeRep(..),IO(..))
-import GHC.Word (Word(W#),Word8(W8#))
+import GHC.Word (Word(W#),Word8(W8#),Word32(W32#),Word64(W64#))
+import GHC.Float (Float(F#))
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Small (ByteArray(..))
@@ -120,6 +128,7 @@ import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
   plusWord#,timesWord#,indexWord8Array#,eqWord#,andI#,
   clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,quotInt#,
   shrinkMutableByteArray#,copyMutableByteArray#,chr#,
+  writeWord32Array#,readFloatArray#,runRW#,
   RealWorld)
 
 type Bytes# = (# ByteArray#, Int#, Int# #)
@@ -181,7 +190,7 @@ boxLeftovers :: Maybe# (Leftovers# s) -> Maybe (Leftovers s)
 boxLeftovers (# (# #) | #) = Nothing
 boxLeftovers (# | (# theBytes, stream #) #) = Just (Leftovers (boxBytes theBytes) stream)
 
-newtype Parser e c a = Parser (ParserLevity e c 'LiftedRep a)
+newtype Parser e c a = Parser { getParser :: ParserLevity e c 'LiftedRep a }
 
 instance Functor (Parser e c) where
   fmap = mapParser
@@ -239,6 +248,13 @@ newtype StatefulParser e c s a = StatefulParser
     -> State# s
     -> (# State# s, Result# e c s 'LiftedRep a #)
   }
+
+instance PrimMonad (StatefulParser e c s) where
+  type PrimState (StatefulParser e c s) = s
+  primitive f = StatefulParser
+    (\c m s0 -> case f s0 of
+      (# s1, a #) -> (# s1, (# m, (# | a #), c #) #)
+    )
 
 sequenceRight :: Parser e c a -> Parser e c b -> Parser e c b
 {-# NOINLINE[2] sequenceRight #-}
@@ -370,6 +386,83 @@ decimalContinue theWord = ParserLevity (action theWord) where
 
 decimalWordUnboxed :: ParserLevity e c 'WordRep Word#
 decimalWordUnboxed = bindWord decimalDigit decimalContinue
+
+bigEndianWord32 :: Parser e c Word32
+bigEndianWord32 = Parser (boxWord32Parser bigEndianWord32Unboxed)
+
+bigEndianWord32Unboxed :: ParserLevity e c 'WordRep Word#
+bigEndianWord32Unboxed = ParserLevity action where
+  action :: c -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'WordRep Word# #)
+  action c0 m0 s0 = withAtLeast m0 4# s0
+    (getParserLevity
+      ( anyUnboxed `bindWord` \byteA ->
+        anyUnboxed `bindWord` \byteB ->
+        anyUnboxed `bindWord` \byteC ->
+        anyUnboxed `bindWord` \byteD ->
+        let !theWord = uncheckedShiftL# byteA 24#
+                 `or#` uncheckedShiftL# byteB 16#
+                 `or#` uncheckedShiftL# byteC 8#
+                 `or#` byteD
+         in pureWord theWord
+      ) c0
+    )
+    (\bytes0@(# arr, off, _ #) stream s1 ->
+      let !byteA = indexWord8Array# arr (off +# 0#)
+          !byteB = indexWord8Array# arr (off +# 1#)
+          !byteC = indexWord8Array# arr (off +# 2#)
+          !byteD = indexWord8Array# arr (off +# 3#)
+          !theWord = uncheckedShiftL# byteA 24#
+               `or#` uncheckedShiftL# byteB 16#
+               `or#` uncheckedShiftL# byteC 8#
+               `or#` byteD
+       in (# s1, (# (# | (# unsafeDrop# 4# bytes0, stream #) #), (# | theWord #) ,c0 #) #)
+    )
+
+-- TODO: make this compile on 32-bit architectures
+bigEndianWord64 :: forall e c. Parser e c Word64
+bigEndianWord64 = Parser (ParserLevity action) where
+  action :: c -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'LiftedRep Word64 #)
+  action c0 m0 s0 = withAtLeast m0 8# s0
+    (let go :: Int -> Word64 -> Parser e c Word64
+         go !ix !r = if ix < 8
+           then do
+             theByte <- any
+             go (ix + 1) (unsafeShiftL r 8 .|. (fromIntegral theByte :: Word64))
+           else pure r
+      in getParserLevity (getParser (go 0 0)) c0
+    )
+    -- (\m1 s1 -> (# s1, (# m1, (# Nothing | #) , c0 #) #) )
+    (\bytes0@(# arr, off, _ #) stream s1 ->
+      let !byteA = indexWord8Array# arr (off +# 0#)
+          !byteB = indexWord8Array# arr (off +# 1#)
+          !byteC = indexWord8Array# arr (off +# 2#)
+          !byteD = indexWord8Array# arr (off +# 3#)
+          !byteE = indexWord8Array# arr (off +# 4#)
+          !byteF = indexWord8Array# arr (off +# 5#)
+          !byteG = indexWord8Array# arr (off +# 6#)
+          !byteH = indexWord8Array# arr (off +# 7#)
+          !theWord = uncheckedShiftL# byteA 56#
+              `or#` uncheckedShiftL# byteB 48#
+              `or#` uncheckedShiftL# byteC 40#
+              `or#` uncheckedShiftL# byteD 32#
+              `or#` uncheckedShiftL# byteE 24#
+              `or#` uncheckedShiftL# byteF 16#
+              `or#` uncheckedShiftL# byteG 8#
+              `or#` byteH
+       in (# s1, (# (# | (# unsafeDrop# 8# bytes0, stream #) #), (# | W64# theWord #) ,c0 #) #)
+    )
+bigEndianFloat :: Parser e c Float
+bigEndianFloat = fmap word32ToFloat bigEndianWord32
+
+word32ToFloat :: Word32 -> Float
+word32ToFloat (W32# w) = F#
+  (runRW#
+    (\s0 -> case newByteArray# 4# s0 of
+      (# s1, arr #) -> case writeWord32Array# arr 0# w s1 of
+        s2 -> case readFloatArray# arr 0# s2 of
+          (# _, f #) -> f
+    )
+  )
 
 skipSpaceUnboxed :: ParserLevity e c 'LiftedRep ()
 skipSpaceUnboxed = ParserLevity go where
@@ -779,6 +872,23 @@ replicate (I# total) (Parser (ParserLevity f)) =
           s2 -> go (n +# 1# ) xs c1 m1 s2
     _ -> case unsafeFreezeArray# xs s0 of
       (# s1, xsFrozen #) -> (# s1, (# m0, (# | Array xsFrozen #), c0 #) #)
+
+-- | This resets the context on every iteration.
+replicateIndex# :: forall e c a. (Int# -> c) -> Int -> Parser e c a -> Parser e c (Array a)
+replicateIndex# buildContext (I# total) (Parser (ParserLevity f)) =
+  Parser (ParserLevity (\_ m s0 -> case newArray# total (die "replicate") s0 of
+    (# s1, xs0 #) -> go 0# xs0 m s1
+  ))
+  where
+  go :: Int# -> MutableArray# s a -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e c s 'LiftedRep (Array a) #)
+  go !n !xs !m0 !s0 = case n <# total of
+    1# -> case f (buildContext n) m0 s0 of
+      (# s1, (# m1, v, c1 #) #) -> case v of
+        (# err | #) -> (# s1, (# m1, (# err | #), c1 #) #)
+        (# | x #) -> case writeArray# xs n x s1 of
+          s2 -> go (n +# 1# ) xs m1 s2
+    _ -> case unsafeFreezeArray# xs s0 of
+      (# s1, xsFrozen #) -> (# s1, (# m0, (# | Array xsFrozen #), buildContext n #) #)
         
 -- | Repeatly run the folding parser followed by the separator parser
 -- until the end of the input is reached.
@@ -1188,6 +1298,10 @@ pureParser :: a -> Parser e c a
 pureParser a = Parser $ ParserLevity $ \c0 leftovers0 s0 ->
   (# s0, (# leftovers0, (# | a #), c0 #) #)
 
+pureWord :: Word# -> ParserLevity e c 'WordRep Word#
+pureWord a = ParserLevity $ \c0 leftovers0 s0 ->
+  (# s0, (# leftovers0, (# | a #), c0 #) #)
+
 -- TODO: improve this
 mapStatefulParser :: (a -> b) -> StatefulParser e c s a -> StatefulParser e c s b
 mapStatefulParser f p = bindStateful p (pureStatefulParser . f)
@@ -1231,6 +1345,13 @@ boxWord8Parser p = ParserLevity $ \c0 leftovers0 s0 ->
     (# s1, (# leftovers1, val, c1 #) #) -> case val of
       (# err | #) -> (# s1, (# leftovers1, (# err | #), c1 #) #)
       (# | x #) -> (# s1, (# leftovers1, (# | W8# x #), c1 #) #)
+
+boxWord32Parser :: ParserLevity e c 'WordRep Word# -> ParserLevity e c 'LiftedRep Word32
+boxWord32Parser p = ParserLevity $ \c0 leftovers0 s0 ->
+  case getParserLevity p c0 leftovers0 s0 of
+    (# s1, (# leftovers1, val, c1 #) #) -> case val of
+      (# err | #) -> (# s1, (# leftovers1, (# err | #), c1 #) #)
+      (# | x #) -> (# s1, (# leftovers1, (# | W32# x #), c1 #) #)
 
 boxWordParser :: ParserLevity e c 'WordRep Word# -> ParserLevity e c 'LiftedRep Word
 boxWordParser p = ParserLevity $ \c0 leftovers0 s0 ->
@@ -1316,6 +1437,12 @@ modifyContext f (Parser (ParserLevity p)) = Parser $ ParserLevity
   $ \c0 leftovers0 s0 ->
       let !c1 = f c0
        in p c1 leftovers0 s0
+
+-- | Modify the context used for errors. The modification is not
+-- reset or undone at any point.
+setContext :: c -> Parser e c ()
+setContext c = Parser $ ParserLevity
+  $ \_ leftovers0 s0 -> (# s0, (# leftovers0, (# | () #), c #) #)
 
 -- | Modify the context used for errors. If the parser given as
 -- an argument completes, the context is reset.
