@@ -58,7 +58,14 @@ data JsonError
 
 data Error
   = ErrorMissing !SmallText
+  | ErrorNumber
+  | ErrorExpecting !Word8
+  | ErrorInvalidTokenHead !Word8
+  | ErrorString
+  | ErrorExpectingToken
+  | ErrorExpectingBooleanToken
   | ErrorUndocumented
+  | ErrorExpectingEndOfInput
 
 data ContextUnit
   = ContextUnitKey !Text
@@ -68,6 +75,8 @@ data ContextUnit
 data Context
   = ContextCons !ContextUnit !Context
   | ContextNil
+
+data ContextualizedError = ContextualizedError Context Error 
 
 data Value
   = ValueArray !(Array Value)
@@ -220,17 +229,17 @@ unsafeFromAny = unsafeCoerce
 
 decode :: JsonDecoding a -> Bytes -> Either JsonError a
 decode decoding bytes = do
-  let PureResult _ e c = P.parseBytes bytes ContextNil (decodingToParser decoding)
+  let PureResult _ e = P.parseBytes bytes (decodingToParser ContextNil decoding)
    in case e of
         Right a -> Right a
-        Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m))
+        Left (ContextualizedError ctx err) -> Left (prepareContextError ctx err)
 
 decodeStreamST :: JsonDecoding a -> ByteStream s -> ST s (Either (JsonError,Maybe (P.Leftovers s)) a)
 decodeStreamST decoding bytes = do
-  P.Result mleftovers e c <- P.parseStreamST bytes ContextNil (decodingToParser decoding <* P.endOfInput)
+  P.Result mleftovers e <- P.parseStreamST bytes (decodingToParser ContextNil decoding <* P.endOfInput (ContextualizedError ContextNil ErrorExpectingEndOfInput))
   return $ case e of
     Right a -> Right a
-    Left m -> Left (prepareContextError c (fromMaybe ErrorUndocumented m),mleftovers)
+    Left (ContextualizedError ctx err) -> Left (prepareContextError ctx err,mleftovers)
 
 prepareContextError :: Context -> Error -> JsonError
 prepareContextError c e = go c (prepareError e) where
@@ -253,20 +262,21 @@ prepareError = \case
 -- escaping syntax.
 consumeKey ::
      Trie (Indexed (JsonDecoding Any))
-  -> Parser e c (Either (Trie (Indexed (JsonDecoding Any))) (Indexed (JsonDecoding Any)))
-consumeKey = T.lookupM
-  P.any
-  (P.bytes . B.fromByteArray)
-  (fmap (== charToWord8 '"') P.peek)
-  return
+  -> Parser e (Either (Trie (Indexed (JsonDecoding Any))) (Indexed (JsonDecoding Any)))
+consumeKey = error "uheouhtnaoetunhea"
+  -- T.lookupM
+  -- P.any
+  -- (P.bytes . B.fromByteArray)
+  -- (fmap (== charToWord8 '"') P.peek)
+  -- return
   
 
-fastMapDecodingToParser :: FastMapDecoding a -> Parser Error Context a
-fastMapDecodingToParser (FastMapDecoding n f decs defs keys) = do
+fastMapDecodingToParser :: Context -> FastMapDecoding a -> Parser ContextualizedError a
+fastMapDecodingToParser ctx (FastMapDecoding n f decs defs keys) = do
   P.skipSpace
-  P.byte (charToWord8 '{')
+  P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '{'))) (charToWord8 '{')
   P.skipSpace
-  maybeVals <- P.any >>= \case
+  maybeVals <- P.any (ContextualizedError ctx ErrorUndocumented) >>= \case
     125 -> do -- close curly brace
       P.skipSpace
       return defs
@@ -275,23 +285,23 @@ fastMapDecodingToParser (FastMapDecoding n f decs defs keys) = do
       let go = do
             -- Currently, we do not correctly skip over unneeded keys.
             -- This must be fixed
-            Indexed ix valParser <- P.consumption (P.triePure decs)
+            Indexed ix valParser <- P.consumption (P.triePure (ContextualizedError ctx ErrorUndocumented) decs)
             let textualKey = PM.indexUnliftedArray keys ix
-            val <- P.consumption (P.byte (charToWord8 '"') *> P.skipSpace *> P.byte (charToWord8 ':') *> P.scoped (contextConsSmallKey textualKey) (decodingToParser valParser) <* P.skipSpace)
+            val <- P.consumption (P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '"'))) (charToWord8 '"') *> P.skipSpace *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 ':'))) (charToWord8 ':') *> (decodingToParser (contextConsSmallKey textualKey ctx) valParser) <* P.skipSpace)
             P.mutation (PSAM.writeSmallMaybeArray mutVals ix (Just val))
-            P.consumption P.any >>= \case
+            P.consumption (P.any (ContextualizedError ctx ErrorUndocumented)) >>= \case
               125 -> do -- close curly brace
                 P.consumption P.skipSpace
                 P.mutation (PSAM.unsafeFreezeSmallMaybeArray mutVals)
-              44 -> P.consumption (P.skipSpace *> P.byte (charToWord8 '"')) *> go -- comma
-              _ -> P.consumption P.failure
+              44 -> P.consumption (P.skipSpace *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '"'))) (charToWord8 '"')) *> go -- comma
+              _ -> P.consumption (P.failure (ContextualizedError ctx ErrorUndocumented))
       go
-    _ -> P.failure
+    _ -> P.failure (ContextualizedError ctx ErrorUndocumented)
   case PSAM.sequenceSmallMaybeArray maybeVals of
     Nothing -> do -- a value was missing
       let ix = findNothing maybeVals
       let theKey = PM.indexUnliftedArray keys ix
-      P.failureDocumented (ErrorMissing theKey)
+      P.failure (ContextualizedError ctx (ErrorMissing theKey))
     Just confirmed ->
       return (unsafeFromAny (unsafeApplyFunction f n confirmed))
 
@@ -325,135 +335,138 @@ findNothing a = go 0 where
       Just _ -> go (ix + 1)
     else error "Packed.Json.Decoding.findNothing: failed"
 
-decodingToParser :: JsonDecoding a -> Parser Error Context a
-decodingToParser = \case
+decodingToParser :: Context -> JsonDecoding a -> Parser ContextualizedError a
+decodingToParser ctx = \case
   JsonDecodingRaw f -> do
-    v <- valueParser
-    maybe P.failure pure (f v)
-  JsonDecodingCoerce Coercion d -> coerce (decodingToParser d)
-  JsonDecodingBool -> (P.skipSpace *> P.any) >>= \case
-    116 -> P.byte (charToWord8 'r')
-        *> P.byte (charToWord8 'u')
-        *> P.byte (charToWord8 'e')
+    v <- valueParser ctx
+    maybe (P.failure (ContextualizedError ctx ErrorUndocumented)) pure (f v)
+  JsonDecodingCoerce Coercion d -> coerce (decodingToParser ctx d)
+  JsonDecodingBool -> (P.skipSpace *> P.any (ContextualizedError ctx ErrorExpectingBooleanToken)) >>= \case
+    116 -> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'r'))) (charToWord8 'r')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'u'))) (charToWord8 'u')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'e'))) (charToWord8 'e')
         *> pure True
         <* P.skipSpace
-    102 -> P.byte (charToWord8 'a')
-        *> P.byte (charToWord8 'l')
-        *> P.byte (charToWord8 's')
-        *> P.byte (charToWord8 'e')
+    102 -> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'a'))) (charToWord8 'a')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'l'))) (charToWord8 'l')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 's'))) (charToWord8 's')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'e'))) (charToWord8 'e')
         *> pure False
         <* P.skipSpace
-    _ -> P.failure
+    _ -> P.failure (ContextualizedError ctx ErrorExpectingBooleanToken)
   JsonDecodingText ->
-    P.skipSpace *> P.byte (charToWord8 '"') *> stringParserAfterQuote <* P.skipSpace
+    P.skipSpace *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '"'))) (charToWord8 '"') *> stringParserAfterQuote (ContextualizedError ctx ErrorString) <* P.skipSpace
   JsonDecodingArray d -> do
     P.skipSpace
-    P.byte (charToWord8 '[')
-    vals <- P.replicateIntersperseByteIndex# contextConsIndex (charToWord8 ',') (decodingToParser d)
-    P.byte (charToWord8 ']')
+    P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '['))) (charToWord8 '[')
+    vals <- P.replicateIntersperseByteIndex# ctx contextConsIndex (charToWord8 ',') (\theCtx -> decodingToParser theCtx d)
+    P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 ']'))) (charToWord8 ']')
     P.skipSpace
     pure vals 
-  JsonDecodingObject fmd -> fastMapDecodingToParser fmd
+  JsonDecodingObject fmd -> fastMapDecodingToParser ctx fmd
   JsonDecodingGround g -> case g of
     GroundWord ->
       -- Fix this. It needs to handle things with exponents. 
-      P.skipSpace *> P.decimalWord <* P.skipSpace
+      P.skipSpace *> P.decimalWord (ContextualizedError ctx ErrorNumber) <* P.skipSpace
   JsonDecodingGroundArray g -> case g of
     GroundWord ->
          P.skipSpace
-      *> P.byte (charToWord8 '[')
+      *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '['))) (charToWord8 '[')
       *> P.replicateIntersperseBytePrim
            (charToWord8 ',')
-           (P.skipSpace *> P.decimalWord <* P.skipSpace)
-      <* P.byte (charToWord8 ']')
+           (P.skipSpace *> P.decimalWord (ContextualizedError ctx ErrorNumber) <* P.skipSpace)
+      <* P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 ']'))) (charToWord8 ']')
       <* P.skipSpace
     GroundInt ->
          P.skipSpace
-      *> P.byte (charToWord8 '[')
+      *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '['))) (charToWord8 '[')
       *> P.replicateIntersperseBytePrim
            (charToWord8 ',')
-           (P.skipSpace *> P.decimalInt <* P.skipSpace)
-      <* P.byte (charToWord8 ']')
+           (P.skipSpace *> P.decimalInt (ContextualizedError ctx ErrorNumber) <* P.skipSpace)
+      <* P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 ']'))) (charToWord8 ']')
       <* P.skipSpace
 
-valueParser :: Parser e Context Value
-valueParser = do
+valueParser :: Context -> Parser ContextualizedError Value
+valueParser ctx = do
   P.skipSpace
-  x <- P.any
+  x <- P.any (ContextualizedError ctx ErrorExpectingToken)
   v <- case x of
-    116 -> P.byte (charToWord8 'r')
-        *> P.byte (charToWord8 'u')
-        *> P.byte (charToWord8 'e')
+    116 -> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'r'))) (charToWord8 'r')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'u'))) (charToWord8 'u')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'e'))) (charToWord8 'e')
         *> pure (ValueBool True)
-    102 -> P.byte (charToWord8 'a')
-        *> P.byte (charToWord8 'l')
-        *> P.byte (charToWord8 's')
-        *> P.byte (charToWord8 'e')
+    102 -> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'a'))) (charToWord8 'a')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'l'))) (charToWord8 'l')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 's'))) (charToWord8 's')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'e'))) (charToWord8 'e')
         *> pure (ValueBool False)
-    110 -> P.byte (charToWord8 'u')
-        *> P.byte (charToWord8 'l')
-        *> P.byte (charToWord8 'l')
+    110 -> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'u'))) (charToWord8 'u')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'l'))) (charToWord8 'l')
+        *> P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 'l'))) (charToWord8 'l')
         *> pure ValueNull
     34 -> do
-      s <- stringParserAfterQuote
+      s <- stringParserAfterQuote (ContextualizedError ctx ErrorString)
       pure (ValueString s)
     91 -> do
-      vals <- P.replicateIntersperseByteIndex# contextConsIndex (charToWord8 ',') valueParser
-      P.byte (charToWord8 ']')
+      vals <- P.replicateIntersperseByteIndex# ctx contextConsIndex (charToWord8 ',') valueParser
+      P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 ']'))) (charToWord8 ']')
       pure (ValueArray vals) 
     123 -> do
       vals <- P.replicateIntersperseByte (charToWord8 ',') $ do
         P.skipSpace
-        P.byte (charToWord8 '"')
-        theKey <- stringParserAfterQuote
-        P.byte (charToWord8 ':')
-        val <- P.scoped (contextConsKey theKey) valueParser
+        P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '"'))) (charToWord8 '"')
+        theKey <- stringParserAfterQuote (ContextualizedError ctx ErrorString)
+        let newCtx = contextConsKey theKey ctx
+        P.byte (ContextualizedError newCtx (ErrorExpecting (charToWord8 ':'))) (charToWord8 ':')
+        val <- valueParser newCtx
         pure (theKey,val) 
       P.skipSpace
-      P.byte (charToWord8 '}')
+      P.byte (ContextualizedError ctx (ErrorExpecting (charToWord8 '}'))) (charToWord8 '}')
       pure (ValueObject vals)
     45 -> do
-      w <- P.decimalDigitWord
-      fmap ValueNumber (parserDecimalRational False (fromIntegral w))
+      let err = ContextualizedError ctx ErrorNumber
+      w <- P.decimalDigitWord err
+      fmap ValueNumber (parserDecimalRational err False (fromIntegral w))
     _ -> do
       let w = word8ToWord x - 48
+          err = ContextualizedError ctx ErrorNumber
       if w < 10
         then if w > 0
-          then fmap ValueNumber (parserDecimalRational True (fromIntegral w))
+          then fmap ValueNumber (parserDecimalRational err True (fromIntegral w))
           else do
-            byt <- P.peek -- should use some kind of peekMaybe
+            byt <- P.peek err -- should use some kind of peekMaybe
             case byt of
               46 -> do
-                _ <- P.any
-                i <- P.decimalDigitWord
+                _ <- P.any err
+                i <- P.decimalDigitWord err
                 fractionalPart <- parserFractionalPart (fromIntegral i)
-                c <- P.peek -- should use a peekMaybe
+                c <- P.peek err -- should use a peekMaybe
                 if c == 69 || c == 109
                   then do
-                    _ <- P.any
-                    e <- exponentAfterE
+                    _ <- P.any err
+                    e <- exponentAfterE err
                     pure (ValueNumber (fractionalPart * (tenExp e)))
                   else pure (ValueNumber fractionalPart)
               69 -> do
-                _ <- P.any
+                _ <- P.any err
                 _ <- P.optionalPlusMinus
                 P.skipDigits
                 pure (ValueNumber 0)
               101 -> do
-                _ <- P.any
+                _ <- P.any err
                 _ <- P.optionalPlusMinus
                 P.skipDigits
                 pure (ValueNumber 0)
               _ -> pure (ValueNumber 0)
-        else P.failure
+        else P.failure (ContextualizedError ctx (ErrorInvalidTokenHead x))
   P.skipSpace
   pure v
     
 -- Fix this. It needs to validate that the bytes are UTF-8 encoded
 -- text.
-stringParserAfterQuote :: Parser e c Text
-stringParserAfterQuote = do
-  Bytes arr off len <- P.takeBytesUntilByteConsume (charToWord8 '"')
+stringParserAfterQuote :: e -> Parser e Text
+stringParserAfterQuote err = do
+  Bytes arr off len <- P.takeBytesUntilByteConsume err (charToWord8 '"')
   pure (Text arr (fromIntegral off) len)
 
 
@@ -463,28 +476,28 @@ charToWord8 = fromIntegral . ord
 word8ToWord :: Word8 -> Word
 word8ToWord = fromIntegral
 
-parserDecimalRational :: Bool -> Integer -> Parser e c Rational
-parserDecimalRational isPositive initialDigit = do
+parserDecimalRational :: e -> Bool -> Integer -> Parser e Rational
+parserDecimalRational err isPositive initialDigit = do
   wholePart <- parserPositiveInteger initialDigit
-  k <- P.peek >>= \case
+  k <- P.peek err >>= \case
     46 -> do
-      _ <- P.any
-      i <- P.decimalDigitWord
+      _ <- P.any err
+      i <- P.decimalDigitWord err
       fractionalPart <- parserFractionalPart (fromIntegral i)
-      c <- P.peek
+      c <- P.peek err
       if c == 69 || c == 101
         then do
-          _ <- P.any
-          e <- exponentAfterE
+          _ <- P.any err
+          e <- exponentAfterE err
           pure (((wholePart % 1) + fractionalPart) * (tenExp e))
         else pure ((wholePart % 1) + fractionalPart)
     101 -> do
-      _ <- P.any
-      e <- exponentAfterE
+      _ <- P.any err
+      e <- exponentAfterE err
       pure ((wholePart % 1) * (tenExp e))
     69 -> do
-      _ <- P.any
-      e <- exponentAfterE
+      _ <- P.any err
+      e <- exponentAfterE err
       pure ((wholePart % 1) * (tenExp e))
     _ -> pure (wholePart % 1)
   pure (if isPositive then k else negate k)
@@ -493,23 +506,23 @@ tenExp :: Integer -> Rational
 tenExp x = if x > 0 then 10 ^ x else 0.1 ^ negate x
 
 -- argument should be between 0 and 9.
-parserFractionalPart :: Integer -> Parser e c Rational
+parserFractionalPart :: Integer -> Parser e Rational
 parserFractionalPart = go 10 where
   go !denominator !numerator = do
     P.optionalDecimalDigitWord >>= \case
       Nothing -> pure (numerator % denominator)
       Just d -> go (denominator * 10) (numerator * 10 + fromIntegral d)
   
-parserPositiveInteger :: Integer -> Parser e c Integer
+parserPositiveInteger :: Integer -> Parser e Integer
 parserPositiveInteger = go where
   go !i = P.optionalDecimalDigitWord >>= \case
     Nothing -> pure i
     Just j -> go (i * 10 + fromIntegral j)
 
-exponentAfterE :: Parser e c Integer
-exponentAfterE = do
+exponentAfterE :: e -> Parser e Integer
+exponentAfterE err = do
   isPositive <- P.optionalPlusMinus
-  i <- P.decimalDigitWord
+  i <- P.decimalDigitWord err
   k <- parserPositiveInteger (fromIntegral i)
   pure (if isPositive then k else negate k)
   
