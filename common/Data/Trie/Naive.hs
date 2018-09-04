@@ -55,14 +55,14 @@ lookupStep :: Word8 -> Maybe (Trie a) -> Maybe (Trie a)
 lookupStep w Nothing = Nothing
 lookupStep w (Just (Trie _ m)) = M.lookup w m
 
-parser :: Trie (P.Parser e c a) -> P.Parser e c a
-parser (Trie mp m) = case mp of
+parser :: e -> Trie (P.Parser e a) -> P.Parser e a
+parser e (Trie mp m) = case mp of
   Just p -> p
   Nothing -> do
-    w <- P.any
+    w <- P.any e
     case M.lookup w m of
-      Nothing -> P.failure
-      Just t -> parser t
+      Nothing -> P.failure e
+      Just t -> parser e t
 
 fromList :: [(Bytes,a)] -> Trie a
 fromList = fmap SG.getFirst . fromListAppend . map (second SG.First) 

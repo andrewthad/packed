@@ -12,6 +12,8 @@ module Packed.Json.Decoding
   , JsonError(..)
   , Value(..)
   , Context(..) -- stop exporting this
+  , ContextualizedError(..)
+  , Error(..)
   , valueParser
   , decode
   , decodeStreamST
@@ -52,8 +54,7 @@ import qualified Packed.Text.Small as TS
 data JsonError
   = JsonErrorIndex !Int !JsonError
   | JsonErrorKey !Text !JsonError
-  | JsonErrorMissing !SmallText
-  | JsonErrorUndocumented
+  | JsonErrorCause !Error
   deriving (Show,Eq)
 
 data Error
@@ -66,6 +67,7 @@ data Error
   | ErrorExpectingBooleanToken
   | ErrorUndocumented
   | ErrorExpectingEndOfInput
+  deriving (Show,Eq)
 
 data ContextUnit
   = ContextUnitKey !Text
@@ -252,9 +254,7 @@ layerContextUnit u je = case u of
   ContextUnitIndex ix -> JsonErrorIndex ix je
 
 prepareError :: Error -> JsonError
-prepareError = \case
-  ErrorMissing theKey -> JsonErrorMissing theKey
-  ErrorUndocumented -> JsonErrorUndocumented
+prepareError = JsonErrorCause
 
 -- This only behaves correctly when there are no
 -- characters that require escaping in any of the expected

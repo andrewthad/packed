@@ -63,7 +63,7 @@ contextA = do
       $ JD.JsonErrorIndex 1
       $ JD.JsonErrorKey "ages"
       $ JD.JsonErrorIndex 3
-      $ JD.JsonErrorUndocumented
+      $ JD.JsonErrorCause (JD.ErrorInvalidTokenHead 98)
     )
     (JD.decode (JD.fromJson @JD.Value) (B.pack (map charToWord8 sample)))
 
@@ -160,9 +160,9 @@ instance JD.FromJson Person where
     <*> JD.key "person_age" JD.fromJson (Just 42) 
     <*> JD.key "person_living" JD.fromJson Nothing 
 
-runExampleParser :: Parser e JD.Context a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runExampleParser :: (JD.Context -> Parser JD.ContextualizedError a) -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
 runExampleParser parser stream = runST $ do
-  P.Result mleftovers r _ <- P.parseStreamST stream JD.ContextNil parser
+  P.Result mleftovers r <- P.parseStreamST stream (parser JD.ContextNil)
   mextra <- case mleftovers of
     Nothing -> return Nothing
     Just (P.Leftovers chunk remainingStream) -> do

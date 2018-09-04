@@ -58,7 +58,7 @@ byteParserDecimalWord = property $ do
   w <- forAll (word (linear minBound maxBound))
   let stream = foldMap (Stream.singleton . charToWord8) (show w)
   let v = runST $ do
-        P.Result Nothing (Right x) _ <- P.parseStreamST stream () P.decimalWord
+        P.Result Nothing (Right x) <- P.parseStreamST stream (P.decimalWord ())
         return x
   w === v
 
@@ -78,20 +78,20 @@ byteParserArtificalA = property $ do
   Nothing === mextra
   Just (ArtificialAlpha 524 'C') === r
 
-parserArtificialA :: Parser e c ArtificialAlpha
+parserArtificialA :: Parser () ArtificialAlpha
 parserArtificialA = do
-  P.bytes (B.pack (map charToWord8 "With "))
-  n <- P.decimalWord
-  P.byte (charToWord8 ',')
+  P.bytes () (B.pack (map charToWord8 "With "))
+  n <- P.decimalWord ()
+  P.byte () (charToWord8 ',')
   P.skipSpace
-  P.byte (charToWord8 '0')
-  P.byte (charToWord8 'x')
+  P.byte () (charToWord8 '0')
+  P.byte () (charToWord8 'x')
   _ <- P.takeBytesWhileMember hexSet
   P.skipSpace
-  P.bytes (B.pack (map charToWord8 "choice "))
-  c <- P.any
-  P.bytes (B.pack (map charToWord8 " is the answer."))
-  P.endOfInput
+  P.bytes () (B.pack (map charToWord8 "choice "))
+  c <- P.any ()
+  P.bytes () (B.pack (map charToWord8 " is the answer."))
+  P.endOfInput ()
   return (ArtificialAlpha n (word8ToChar c))
 
 byteParserFailureGamma :: Property
@@ -102,9 +102,9 @@ byteParserFailureGamma = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       (r,mextra) = runExampleParser
-        ( P.byte (charToWord8 'A') *> P.byte (charToWord8 'B')
-          *> P.byte (charToWord8 'X') *> P.byte (charToWord8 'D')
-          *> P.byte (charToWord8 'E')
+        ( P.byte () (charToWord8 'A') *> P.byte () (charToWord8 'B')
+          *> P.byte () (charToWord8 'X') *> P.byte () (charToWord8 'D')
+          *> P.byte () (charToWord8 'E')
         ) stream
   Just "CDE" === mextra
   Nothing === r
@@ -117,8 +117,8 @@ byteParserFailureEpsilon = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       (r,mextra) = runExampleParser
-        ( P.byte (charToWord8 'A') *> P.byte (charToWord8 'B')
-          *> P.byte (charToWord8 'C') *> P.byte (charToWord8 'X')
+        ( P.byte () (charToWord8 'A') *> P.byte () (charToWord8 'B')
+          *> P.byte () (charToWord8 'C') *> P.byte () (charToWord8 'X')
         ) stream
   Just "D" === mextra
   Nothing === r
@@ -140,16 +140,16 @@ byteParserArtificalB = property $ do
   Nothing === mextra
   Just (ArtificialBeta (s2b "Drew") expected) === r
 
-parserArtificialB :: Parser e c ArtificialBeta
+parserArtificialB :: Parser () ArtificialBeta
 parserArtificialB = do
-  P.bytes (s2b "Name: ")
-  name <- P.takeBytesUntilByteConsume (c2w '.')
-  P.bytes (s2b " Attributes: ")
-  attrCount <- P.decimalWord
-  P.bytes (s2b " (")
-  attrs <- P.replicate (wordToInt attrCount) (P.takeBytesUntilByteConsume (c2w ','))
-  P.bytes (s2b ").")
-  P.endOfInput
+  P.bytes () (s2b "Name: ")
+  name <- P.takeBytesUntilByteConsume () (c2w '.')
+  P.bytes () (s2b " Attributes: ")
+  attrCount <- P.decimalWord ()
+  P.bytes () (s2b " (")
+  attrs <- P.replicate (wordToInt attrCount) (P.takeBytesUntilByteConsume () (c2w ','))
+  P.bytes () (s2b ").")
+  P.endOfInput ()
   return (ArtificialBeta name attrs)
 
 byteParserArtificalDelta :: Property
@@ -172,9 +172,9 @@ byteParserArtificalKappa = property $ do
       stream = foldMap Stream.fromBytes chunks
       (r,mextra) = runExampleParser
         ( do
-          P.byte (charToWord8 'n')
-          P.byte (charToWord8 ':')
-          P.replicateIntersperseBytePrim (charToWord8 ',') P.decimalWord <* P.endOfInput
+          P.byte () (charToWord8 'n')
+          P.byte () (charToWord8 ':')
+          P.replicateIntersperseBytePrim (charToWord8 ',') (P.decimalWord ()) <* P.endOfInput ()
         ) stream
   Nothing === mextra
   Just [55,10,246,2135,4267] === fmap PM.primArrayToList r
@@ -187,35 +187,35 @@ byteParserTrieSnmp = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       expected = fromList [55, 12, 29, 6] :: Array Word
-      (r,mextra) = runExampleParser (P.replicateUntilEnd (P.trie snmptrapd)) stream
+      (r,mextra) = runExampleParser (P.replicateUntilEnd (P.trie () snmptrapd)) stream
   Nothing === mextra
   Just expected === r
 
-snmptrapd :: Trie.Trie (Parser e c Word)
+snmptrapd :: Trie.Trie (Parser () Word)
 snmptrapd = Trie.fromList snmptradpPairs
 
-snmptradpPairs :: [(Bytes,Parser e c Word)]
+snmptradpPairs :: [(Bytes,Parser () Word)]
 snmptradpPairs =
-  [ (s2b "STRING: ", P.byte (c2w '_') *> P.decimalWord <* P.byte (c2w '_') <* P.byte (c2w ' '))
-  , (s2b "INTEGER: ", P.decimalWord <* P.skipSpace)
-  , (s2b "OID: ", liftA2 (+) (P.decimalWord <* P.byte (c2w ',')) P.decimalWord <* P.skipSpace)
-  , (s2b "Timeticks: ", 6 <$ P.skipUntilByteConsume (c2w ' '))
+  [ (s2b "STRING: ", P.byte () (c2w '_') *> P.decimalWord () <* P.byte () (c2w '_') <* P.byte () (c2w ' '))
+  , (s2b "INTEGER: ", P.decimalWord () <* P.skipSpace)
+  , (s2b "OID: ", liftA2 (+) (P.decimalWord () <* P.byte () (c2w ',')) (P.decimalWord ()) <* P.skipSpace)
+  , (s2b "Timeticks: ", 6 <$ P.skipUntilByteConsume () (c2w ' '))
   ]
 
 {-# NOINLINE altMap #-}
-altMap :: Map Word8 (Bytes,Parser e c Word)
+altMap :: Map Word8 (Bytes,Parser () Word)
 altMap = M.fromList
-  [(c2w 'S',(s2b "trauss",P.decimalWord <* P.byte (c2w ' ')))
-  ,(c2w 'J',(s2b "hey", P.failure))
+  [(c2w 'S',(s2b "trauss",P.decimalWord () <* P.byte () (c2w ' ')))
+  ,(c2w 'J',(s2b "hey", P.failure ()))
   ]
 
 {-# NOINLINE useMap #-}
-useMap :: Parser e c Word
+useMap :: Parser () Word
 useMap = do
-  w <- P.any
+  w <- P.any ()
   case M.lookup w altMap of
-    Nothing -> P.failure
-    Just (x,p) -> P.bytes x >> p
+    Nothing -> P.failure ()
+    Just (x,p) -> P.bytes () x >> p
 
 byteParserTrieNumbers :: Property
 byteParserTrieNumbers = property $ do
@@ -225,7 +225,7 @@ byteParserTrieNumbers = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       expected = fromList [5, 1, 9, 6, 7, 2] :: Array Word
-      (r,mextra) = runExampleParser (P.replicateIntersperseByte (c2w ' ') (P.triePure numberTrie) <* P.endOfInput) stream
+      (r,mextra) = runExampleParser (P.replicateIntersperseByte (c2w ' ') (P.triePure () numberTrie) <* P.endOfInput ()) stream
   Nothing === mextra
   Just expected === r
 
@@ -237,18 +237,18 @@ numberTrie = Trie.fromList
   , (s2b "zero", 0)
   ]
 
-parserArtificialDelta :: Parser e c ()
+parserArtificialDelta :: Parser () ()
 parserArtificialDelta = do
   P.skipDigits
-  name <- P.byte (c2w ':')
+  name <- P.byte () (c2w ':')
   P.skipDigits
-  name <- P.byte (c2w ':')
+  name <- P.byte () (c2w ':')
   P.skipDigits
-  name <- P.byte (c2w ':')
+  name <- P.byte () (c2w ':')
   P.skipDigits
-  name <- P.byte (c2w ':')
+  name <- P.byte () (c2w ':')
   P.skipDigits
-  P.endOfInput
+  P.endOfInput ()
 
 byteParserEolAccept :: Property
 byteParserEolAccept = property $ do
@@ -258,7 +258,7 @@ byteParserEolAccept = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       (r,mextra) = runExampleParser
-        (P.replicateUntilEnd P.takeBytesUntilEndOfLineConsume)
+        (P.replicateUntilEnd (P.takeBytesUntilEndOfLineConsume ()))
         stream
       expected = fromList
         [ s2b "age", s2b "of", s2b "the", s2b "greatest"
@@ -275,7 +275,7 @@ byteParserEolReject = property $ do
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
       (r,mextra) = runExampleParser
-        (P.replicateUntilEnd P.takeBytesUntilEndOfLineConsume)
+        (P.replicateUntilEnd (P.takeBytesUntilEndOfLineConsume ()))
         stream
   Just "\rhas\narrived" === mextra
 
@@ -289,9 +289,9 @@ byteParserHttpRequest = property $ do
   Nothing === mextra
   Just Request.expected === r
 
-runExampleParser :: Parser e () a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
+runExampleParser :: Parser () a -> (forall s. ByteStream s) -> (Maybe a, Maybe String)
 runExampleParser parser stream = runST $ do
-  P.Result mleftovers r _ <- P.parseStreamST stream () parser
+  P.Result mleftovers r <- P.parseStreamST stream parser
   mextra <- case mleftovers of
     Nothing -> return Nothing
     Just (P.Leftovers chunk remainingStream) -> do

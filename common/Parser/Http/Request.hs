@@ -39,18 +39,18 @@ data Header = Header
 http11 :: HttpVersion
 http11 = HttpVersion 1 1
 
-parser :: Parser e c Request
+parser :: Parser () Request
 parser = do
-  method <- Parser.takeBytesUntilByteConsume (c2w ' ')
-  (path,c) <- Parser.takeBytesUntilMemberConsume spaceQuestionSet
+  method <- Parser.takeBytesUntilByteConsume () (c2w ' ')
+  (path,c) <- Parser.takeBytesUntilMemberConsume () spaceQuestionSet
   query <- case c of
-    63 -> Parser.takeBytesUntilByteConsume (c2w ' ')
+    63 -> Parser.takeBytesUntilByteConsume () (c2w ' ')
     _ -> return B.empty
   version <- parserVersion
-  Parser.endOfLine
+  Parser.endOfLine ()
   headers <- parserHeaders
-  Parser.endOfLine
-  Parser.endOfInput
+  Parser.endOfLine ()
+  Parser.endOfInput ()
   return (Request method path query version headers)
   
 spaceQuestionSet :: ByteSet
@@ -59,18 +59,18 @@ spaceQuestionSet = ByteSet.fromList (map c2w ['?',' '])
 headerNameSet :: ByteSet
 headerNameSet = ByteSet.fromList (map c2w (['_','-'] ++ ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9']))
 
-parserVersion :: Parser e c HttpVersion
-parserVersion = http11 <$ Parser.bytes (s2b "HTTP/1.1")
+parserVersion :: Parser () HttpVersion
+parserVersion = http11 <$ Parser.bytes () (s2b "HTTP/1.1")
 
-parserHeaders :: Parser e c (Array Header)
+parserHeaders :: Parser () (Array Header)
 parserHeaders = Parser.replicateIntersperseMember nonNewlineSet parserHeader
 
-parserHeader :: Parser e c Header
+parserHeader :: Parser () Header
 parserHeader = do
   name <- Parser.takeBytesWhileMember headerNameSet
-  Parser.byte (c2w ':')
+  Parser.byte () (c2w ':')
   Parser.skipSpace
-  value <- Parser.takeBytesUntilEndOfLineConsume
+  value <- Parser.takeBytesUntilEndOfLineConsume ()
   return (Header name value)
 
 c2w :: Char -> Word8
