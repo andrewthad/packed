@@ -17,24 +17,26 @@ module Packed.Bytes.Parser
   ( Parser(..)
   , Result(..)
   , run
+  , bigEndianWord16
   , bigEndianWord32
+  , decimalWord32
   ) where
 
 import Packed.Bytes (Bytes(..))
 
 import Data.Word (Word32)
 import Data.Primitive (ByteArray(..))
-import GHC.Word (Word32(W32#))
+import GHC.Word (Word32(W32#),Word16(W16#))
 import GHC.Int (Int(I#))
 import GHC.Types (TYPE,RuntimeRep(..),IO(..),Type)
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
   (<#),(==#),(>=#),(*#),(<=#),
   MutableArray#,MutableByteArray#,writeArray#,unsafeFreezeArray#,newArray#,
-  unsafeFreezeByteArray#,newByteArray#,
+  unsafeFreezeByteArray#,newByteArray#,and#,
   plusWord#,timesWord#,indexWord8Array#,eqWord#,andI#,
   clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,quotInt#,
-  shrinkMutableByteArray#,copyMutableByteArray#,chr#,
-  writeWord32Array#,readFloatArray#,runRW#,
+  shrinkMutableByteArray#,copyMutableByteArray#,chr#,gtWord#,
+  writeWord32Array#,readFloatArray#,runRW#,ltWord#,minusWord#,
   RealWorld)
 
 type Maybe# (a :: TYPE r) = (# (# #) | a #)
@@ -84,7 +86,8 @@ instance Applicative (Parser e) where
 
 -- Require a specified number of bytes to be remaining in the
 -- input. If there are not this many bytes present, fail at
--- the current offset.
+-- the current offset. The parsers that use this always consume
+-- exactly the same number of bytes.
 {-# NOINLINE[2] require #-}
 require ::
      Int# -- how many bytes do we need
@@ -103,13 +106,24 @@ require n toError toConsumed f = Parser $ ParserLevity $ \arr off end ->
         1# -> (# off +# n, (# | f arr off #) #)
         _ -> (# off +# toConsumed len, (# toError len | #) #)
 
+atMost ::
+     Int# -- the maximal number of bytes that could be consumed
+  -> ( ByteArray# -> Int# -> Result# e 'LiftedRep a ) -- parser without bounds checking
+  -> Parser e a -- parser with bounds checking
+  -> Parser e a
+atMost n f (Parser (ParserLevity g)) = Parser $ ParserLevity $ \arr off end ->
+  let len = end -# off 
+   in case len >=# n of
+        1# -> f arr off
+        _ -> g arr off end
+
 {-# INLINE bigEndianWord32 #-}
 bigEndianWord32 :: e -> Parser e Word32
 bigEndianWord32 e = require 4# (\_ -> e) (\_ -> 0#) (\arr off -> W32# (unsafeBigEndianWord32Unboxed arr off))
 
 unsafeBigEndianWord32Unboxed :: ByteArray# -> Int# -> Word#
 unsafeBigEndianWord32Unboxed arr off =
-  let !byteA = indexWord8Array# arr (off +# 0#)
+  let !byteA = indexWord8Array# arr off
       !byteB = indexWord8Array# arr (off +# 1#)
       !byteC = indexWord8Array# arr (off +# 2#)
       !byteD = indexWord8Array# arr (off +# 3#)
@@ -118,6 +132,77 @@ unsafeBigEndianWord32Unboxed arr off =
            `or#` uncheckedShiftL# byteC 8#
            `or#` byteD
    in theWord
+
+{-# INLINE bigEndianWord16 #-}
+bigEndianWord16 :: e -> Parser e Word16
+bigEndianWord16 e = require 2# (\_ -> e) (\_ -> 0#) (\arr off -> W16# (unsafeBigEndianWord16Unboxed arr off))
+
+unsafeBigEndianWord16Unboxed :: ByteArray# -> Int# -> Word#
+unsafeBigEndianWord16Unboxed arr off =
+  let !byteA = indexWord8Array# arr off
+      !byteB = indexWord8Array# arr (off +# 1#)
+      !theWord = uncheckedShiftL# byteA 8#
+           `or#` byteB
+   in theWord
+
+-- | This parser does not allow leading zeroes. Consequently,
+-- we can establish an upper bound on the number of bytes this
+-- parser will consume. This means that it can typically omit
+-- most bounds-checking as it runs.
+decimalWord32 :: e -> Parser e Word32
+decimalWord32 e = Parser (boxWord32Parser (decimalWord32Unboxed e))
+  -- atMost 10#
+  -- unsafeDecimalWord32Unboxed
+  -- (\x -> case decimalWord32Unboxed)
+
+decimalWord32Unboxed :: forall e. e -> ParserLevity e 'WordRep Word#
+decimalWord32Unboxed e = ParserLevity $ \arr off end -> let len = end -# off in case len ># 0# of
+  1# -> case unsafeDecimalDigitUnboxedMaybe arr off of
+    (# (# #) | #) -> (# off, (# e | #) #)
+    (# | initialDigit #) -> case initialDigit of
+      0## -> -- zero is special because we do not allow leading zeroes
+        case len ># 1# of
+          1# -> case unsafeDecimalDigitUnboxedMaybe arr (off +# 1#) of
+            (# (# #) | #) -> (# off +# 1#, (# | 0## #) #)
+            (# | _ #) -> (# (off +# 2#) , (# e | #) #)
+          _ -> (# off +# 1#, (# | 0## #) #)
+      _ ->
+        let maximumDigits = case gtWord# initialDigit 4## of
+              1# -> 8#
+              _ -> 9#
+            go :: Int# -> Int# -> Word# -> Result# e 'WordRep Word#
+            go !ix !counter !acc = case counter ># 0# of
+              1# -> case ix <# end of
+                1# -> case unsafeDecimalDigitUnboxedMaybe arr ix of
+                  (# (# #) | #) -> (# ix, (# | acc #) #)
+                  (# | w #) -> go (ix +# 1#) (counter -# 1#) (plusWord# w (timesWord# acc 10##))
+                _ -> (# ix, (# | acc #) #)
+              _ -> let accTrimmed = acc `and#` 0xFFFFFFFF## in case ix <# end of
+                1# -> case unsafeDecimalDigitUnboxedMaybe arr ix of
+                  (# (# #) | #) -> case (ltWord# accTrimmed 1000000000##) `andI#` (eqWord# initialDigit 4##) of
+                    1# -> (# ix, (# e | #) #)
+                    _ -> (# ix, (# | accTrimmed #) #)
+                  (# | _ #) -> (# ix, (# e | #) #)
+                _ -> case (ltWord# accTrimmed 1000000000##) `andI#` (eqWord# initialDigit 4##) of
+                  1# -> (# ix, (# e | #) #)
+                  _ -> (# ix, (# | accTrimmed #) #)
+         in go ( off +# 1# ) maximumDigits initialDigit
+  _ -> (# off, (# e | #) #)
+
+unsafeDecimalDigitUnboxedMaybe :: ByteArray# -> Int# -> Maybe# Word#
+unsafeDecimalDigitUnboxedMaybe arr off =
+  let !w = minusWord# (indexWord8Array# arr (off +# 0#)) 48##
+   in case ltWord# w 10## of
+        1# -> (# | w #)
+        _ -> (# (# #) | #)
+
+unsafeDecimalDigitUnboxed :: e -> ByteArray# -> Int# -> Either# e Word#
+unsafeDecimalDigitUnboxed e arr off =
+  let !w = minusWord# (indexWord8Array# arr (off +# 0#)) 48##
+   in case ltWord# w 10## of
+        1# -> (# | w #)
+        _ -> (# e | #)
+
 
 {-# RULES "parserApplyPure" [~2] forall f n1 toError1 toConsumed1 p1. apParser (pureParser f) (require n1 toError1 toConsumed1 p1) =
       (require n1 toError1 toConsumed1 (\arr off0 -> f (p1 arr off0)))
@@ -162,7 +247,10 @@ apParser (Parser f) (Parser g) = Parser (applyLifted f g)
 boxWord32Parser ::
      ParserLevity e 'WordRep Word#
   -> ParserLevity e 'LiftedRep Word32
-boxWord32Parser = error "Uhoetuhaotn"
+boxWord32Parser (ParserLevity f) = ParserLevity $ \arr off0 end -> case f arr off0 end of
+  (# off1, r #) -> case r of
+    (# e | #) -> (# off1, (# e | #) #)
+    (# | w #) -> (# off1, (# | W32# w #) #)
 
 boxWord32Word32Parser ::
      ParserLevity e ('TupleRep '[ 'WordRep, 'WordRep ]) (# Word#, Word# #)
@@ -173,10 +261,10 @@ applyLifted ::
      ParserLevity e 'LiftedRep (a -> b)
   -> ParserLevity e 'LiftedRep a
   -> ParserLevity e 'LiftedRep b
-applyLifted (ParserLevity f) (ParserLevity g) = ParserLevity $ \arr off0 len -> case f arr off0 len of
+applyLifted (ParserLevity f) (ParserLevity g) = ParserLevity $ \arr off0 end -> case f arr off0 end of
   (# off1, r #) -> case r of
     (# e | #) -> (# off1, (# e | #) #)
-    (# | a #) -> case g arr off1 len of
+    (# | a #) -> case g arr off1 end of
       (# off2, r2 #) -> case r2 of
         (# e | #) -> (# off2, (# e | #) #)
         (# | b #) -> (# off2, (# | a b #) #)

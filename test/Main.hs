@@ -119,6 +119,10 @@ tests = testGroup "Tests"
       [ testCase "A" Parser.fixedParserA
       , testCase "B" Parser.fixedParserB
       , testCase "C" Parser.fixedParserC
+      , testCase "D" Parser.fixedParserD
+      , testProperty "E" Parser.fixedParserE
+      , testProperty "F" Parser.fixedParserF
+      , testCase "G" Parser.fixedParserG
       ]
     , testGroup "ByteMap" ByteMap.tests
     , testGroup "Trie"

@@ -25,15 +25,19 @@ module Parser
   , fixedParserA
   , fixedParserB
   , fixedParserC
+  , fixedParserD
+  , fixedParserE
+  , fixedParserF
+  , fixedParserG
   ) where
 
 import Control.Applicative
 import Control.Monad.ST (ST,runST)
 import Data.Primitive (Array)
-import Data.Word (Word8)
+import Data.Word (Word8,Word32)
 import GHC.Exts (fromList,unsafeCoerce#)
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
-import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
+import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word,word32)
 import Hedgehog.Range (Range,linear)
 import Packed.Bytes (Bytes)
 import Packed.Bytes.Stream.Parser (Parser)
@@ -344,4 +348,31 @@ fixedParserC = do
   let sample = B.drop 7 (B.pack (replicate 7 255 ++ enumFromTo 0 7))
       r = FP.run sample (pure (,,) <*> FP.bigEndianWord32 'A' <*> FP.bigEndianWord32 'B' <*> FP.bigEndianWord32 'C')
   assertEqual "equality" (FP.Result 8 (Left 'C')) r
+
+fixedParserD :: Assertion
+fixedParserD = do
+  let sample = B.drop 3 (B.pack (replicate 3 255 ++ (map charToWord8 "53246")))
+      r = FP.run sample (FP.decimalWord32 ())
+  assertEqual "equality" (FP.Result 5 (Right 53246)) r
+
+fixedParserE :: Property
+fixedParserE = property $ do
+  w <- forAll (word32 (linear minBound maxBound))
+  let b = B.pack (map charToWord8 (show w))
+      r = FP.run b (FP.decimalWord32 ())
+  r === FP.Result (B.length b) (Right w)
+
+fixedParserF :: Property
+fixedParserF = property $ do
+  let maxWord32 = toInteger (maxBound :: Word32)
+  w <- forAll (integral (linear (maxWord32 + 1) (maxWord32 * 3)))
+  let b = B.pack (map charToWord8 (show w))
+      FP.Result ix e = FP.run b (FP.decimalWord32 ())
+  e === Left ()
+
+fixedParserG :: Assertion
+fixedParserG = do
+  let sample = B.drop 19 (B.pack (replicate 19 255 ++ (map charToWord8 "07")))
+      r = FP.run sample (FP.decimalWord32 ())
+  assertEqual "equality" (FP.Result 2 (Left ())) r
 
