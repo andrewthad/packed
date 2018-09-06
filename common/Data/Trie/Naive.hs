@@ -20,7 +20,7 @@ import Data.Bifunctor (second)
 import Packed.Bytes (Bytes)
 import qualified Data.Char
 import qualified GHC.OldList as L
-import qualified Packed.Bytes.Parser as P
+import qualified Packed.Bytes.Stream.Parser as P
 import qualified Packed.Bytes as B
 import qualified Data.Semigroup as SG
 import qualified Data.Map.Strict as M

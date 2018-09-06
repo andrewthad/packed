@@ -28,7 +28,7 @@ import Hedgehog (Property,Gen,property,forAll,(===),failure)
 import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
 import Hedgehog.Range (Range,linear)
 import Packed.Bytes (Bytes)
-import Packed.Bytes.Parser (Parser)
+import Packed.Bytes.Stream.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Small (ByteArray)
 import Packed.Bytes.Stream.ST (ByteStream)
@@ -42,7 +42,7 @@ import qualified Data.Char
 import qualified Data.Map.Strict as M
 import qualified GHC.OldList as L
 import qualified Packed.Bytes as B
-import qualified Packed.Bytes.Parser as P
+import qualified Packed.Bytes.Stream.Parser as P
 import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Trie as Trie

@@ -78,42 +78,47 @@ tests = testGroup "Tests"
       ]
     , testGroup "Stream"
       [ testProperty "append" byteStreamAppendProp
+      , testGroup "Parser"
+        [ testProperty "decimalWord" Parser.byteParserDecimalWord
+        , testGroup "takeBytesUntilEndOfLineConsume"
+          [ testProperty "accept" Parser.byteParserEolAccept
+          -- Uncomment this once trac 15300 is resolved
+          , testProperty "reject" Parser.byteParserEolReject
+          ]
+        , testGroup "Artificial"
+          [ testProperty "alpha" Parser.byteParserArtificalA
+          , testProperty "beta" Parser.byteParserArtificalB
+          , testProperty "delta" Parser.byteParserArtificalDelta
+          , testProperty "kappa" Parser.byteParserArtificalKappa
+          , testProperty "http-request" Parser.byteParserHttpRequest
+          ]
+        , testGroup "Failure"
+          [ testProperty "gamma" Parser.byteParserFailureGamma
+          , testProperty "epsilon" Parser.byteParserFailureEpsilon
+          ]
+        , testGroup "Trie"
+          [ testProperty "snmptrapd" Parser.byteParserTrieSnmp
+          , testProperty "numbers" Parser.byteParserTrieNumbers
+          ]
+        , testGroup "JSON"
+          [ testProperty "plain" Json.valueParserProperty
+          , testGroup "context"
+            [ testCase "A" Json.contextA
+            ]
+          , testGroup "object"
+            [ testProperty "A" Json.objectA
+            , testProperty "B" Json.objectB
+            , testProperty "C" Json.objectC
+            , testProperty "D" Json.objectD
+            , testProperty "E" Json.objectE
+            ]
+          ]
+        ]
       ]
     , testGroup "Parser"
-      [ testProperty "decimalWord" Parser.byteParserDecimalWord
-      , testGroup "takeBytesUntilEndOfLineConsume"
-        [ testProperty "accept" Parser.byteParserEolAccept
-        -- Uncomment this once trac 15300 is resolved
-        , testProperty "reject" Parser.byteParserEolReject
-        ]
-      , testGroup "Artificial"
-        [ testProperty "alpha" Parser.byteParserArtificalA
-        , testProperty "beta" Parser.byteParserArtificalB
-        , testProperty "delta" Parser.byteParserArtificalDelta
-        , testProperty "kappa" Parser.byteParserArtificalKappa
-        , testProperty "http-request" Parser.byteParserHttpRequest
-        ]
-      , testGroup "Failure"
-        [ testProperty "gamma" Parser.byteParserFailureGamma
-        , testProperty "epsilon" Parser.byteParserFailureEpsilon
-        ]
-      , testGroup "Trie"
-        [ testProperty "snmptrapd" Parser.byteParserTrieSnmp
-        , testProperty "numbers" Parser.byteParserTrieNumbers
-        ]
-      , testGroup "JSON"
-        [ testProperty "plain" Json.valueParserProperty
-        , testGroup "context"
-          [ testCase "A" Json.contextA
-          ]
-        , testGroup "object"
-          [ testProperty "A" Json.objectA
-          , testProperty "B" Json.objectB
-          , testProperty "C" Json.objectC
-          , testProperty "D" Json.objectD
-          , testProperty "E" Json.objectE
-          ]
-        ]
+      [ testCase "A" Parser.fixedParserA
+      , testCase "B" Parser.fixedParserB
+      , testCase "C" Parser.fixedParserC
       ]
     , testGroup "ByteMap" ByteMap.tests
     , testGroup "Trie"

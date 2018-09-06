@@ -40,3 +40,4 @@ minimal
 minimal.hs
 .ghc*
 dump.txt
+example.hs

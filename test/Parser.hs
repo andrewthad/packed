@@ -8,7 +8,8 @@
 {-# LANGUAGE UnboxedTuples #-}
 
 module Parser
-  ( byteParserArtificalA
+  ( -- * Streaming Parsers
+    byteParserArtificalA
   , byteParserArtificalB
   , byteParserArtificalDelta
   , byteParserArtificalKappa
@@ -20,6 +21,10 @@ module Parser
   , byteParserEolReject
   , byteParserTrieSnmp
   , byteParserTrieNumbers
+    -- * Fixed Parsers
+  , fixedParserA
+  , fixedParserB
+  , fixedParserC
   ) where
 
 import Control.Applicative
@@ -31,18 +36,20 @@ import Hedgehog (Property,Gen,property,forAll,(===),failure)
 import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word)
 import Hedgehog.Range (Range,linear)
 import Packed.Bytes (Bytes)
-import Packed.Bytes.Parser (Parser)
+import Packed.Bytes.Stream.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
 import Packed.Bytes.Small (ByteArray)
 import Packed.Bytes.Stream.ST (ByteStream)
 import Packed.Bytes.Trie (Trie)
 import Data.Map (Map)
+import Test.Tasty.HUnit (assertEqual,Assertion)
 import qualified Data.List.Split as LS
 import qualified Data.Char
 import qualified Data.Map.Strict as M
 import qualified GHC.OldList as L
 import qualified Packed.Bytes as B
-import qualified Packed.Bytes.Parser as P
+import qualified Packed.Bytes.Parser as FP
+import qualified Packed.Bytes.Stream.Parser as P
 import qualified Packed.Bytes.Set as ByteSet
 import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Trie as Trie
@@ -316,4 +323,25 @@ word8ToChar = Data.Char.chr . fromIntegral
 
 wordToInt :: Word -> Int
 wordToInt = fromIntegral
+
+fixedParserA :: Assertion
+fixedParserA = do
+  let sample = B.drop 1 (B.pack (0 : enumFromTo 0 11))
+      r = FP.run sample (liftA3 (,,) (FP.bigEndianWord32 'A') (FP.bigEndianWord32 'B') (FP.bigEndianWord32 'C'))
+      expected0 = 0 * (256 ^ 3) + 1 * (256 ^ 2) + 2 * (256 ^ 1) + 3 * (256 ^ 0)
+      expected1 = 4 * (256 ^ 3) + 5 * (256 ^ 2) + 6 * (256 ^ 1) + 7 * (256 ^ 0)
+      expected2 = 8 * (256 ^ 3) + 9 * (256 ^ 2) + 10 * (256 ^ 1) + 11 * (256 ^ 0)
+  assertEqual "equality" (FP.Result 12 (Right (expected0,expected1,expected2))) r
+
+fixedParserB :: Assertion
+fixedParserB = do
+  let sample = B.drop 1 (B.pack (0 : enumFromTo 0 6))
+      r = FP.run sample (pure (,,) <*> FP.bigEndianWord32 'A' <*> FP.bigEndianWord32 'B' <*> FP.bigEndianWord32 'C')
+  assertEqual "equality" (FP.Result 4 (Left 'B')) r
+
+fixedParserC :: Assertion
+fixedParserC = do
+  let sample = B.drop 7 (B.pack (replicate 7 255 ++ enumFromTo 0 7))
+      r = FP.run sample (pure (,,) <*> FP.bigEndianWord32 'A' <*> FP.bigEndianWord32 'B' <*> FP.bigEndianWord32 'C')
+  assertEqual "equality" (FP.Result 8 (Left 'C')) r
 

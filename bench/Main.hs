@@ -26,7 +26,7 @@ import qualified GHC.OldList as L
 import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes.Stream.ST as Stream
-import qualified Packed.Bytes.Parser as Parser
+import qualified Packed.Bytes.Stream.Parser as Parser
 import qualified Packed.Text as T
 
 -- from common directory
@@ -386,8 +386,8 @@ decodeHttpRequest :: Array Bytes -> StrictMaybe Request.Request
 decodeHttpRequest arrBytes = runST $ do
   Parser.Result _ r <- Parser.parseStreamST (Stream.fromArray arrBytes) Request.parser
   return $ case r of
-    Nothing -> StrictNothing
-    Just a -> StrictJust a
+    Left () -> StrictNothing
+    Right a -> StrictJust a
   
 
 c2w :: Char -> Word8

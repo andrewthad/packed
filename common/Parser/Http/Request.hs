@@ -10,12 +10,12 @@ module Parser.Http.Request
 import Data.Primitive (Array)
 import Data.Word (Word8)
 import Packed.Bytes (Bytes)
-import Packed.Bytes.Parser (Parser)
+import Packed.Bytes.Stream.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
 import GHC.Exts (fromList)
 import qualified Data.Char
 import qualified Packed.Bytes as B
-import qualified Packed.Bytes.Parser as Parser
+import qualified Packed.Bytes.Stream.Parser as Parser
 import qualified Packed.Bytes.Set as ByteSet
 
 data Request = Request

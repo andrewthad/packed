@@ -34,7 +34,7 @@ import Data.Type.Coercion (Coercion(..))
 import Data.Word (Word8)
 import GHC.Exts (Any,Int#,Int(I#))
 import Packed.Bytes (Bytes(..))
-import Packed.Bytes.Parser (Parser,PureResult(..))
+import Packed.Bytes.Stream.Parser (Parser,PureResult(..))
 import Packed.Bytes.Small (ByteArray)
 import Packed.Bytes.Stream.ST (ByteStream)
 import Packed.Bytes.Trie (Trie)
@@ -47,7 +47,7 @@ import qualified Data.Primitive as PM
 import qualified Data.Primitive.SmallArray.Maybe as PSAM
 import qualified Data.Type.Coercion as C
 import qualified Packed.Bytes as B
-import qualified Packed.Bytes.Parser as P
+import qualified Packed.Bytes.Stream.Parser as P
 import qualified Packed.Bytes.Trie as T
 import qualified Packed.Text.Small as TS
 
