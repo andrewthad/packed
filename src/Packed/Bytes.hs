@@ -259,12 +259,7 @@ equalsByteArray arr1 (Bytes arr2 off2 len2) =
     else False
 
 hGetSome :: Int -> Handle -> IO Bytes
-hGetSome !n !h = do
-  !marr <- PM.newByteArray n
-  !receivedByteCount <- withBytePtr marr $ \addr -> SIO.hGetBufSome h (addrToPtr addr) n
-  !arr <- PM.unsafeFreezeByteArray marr
-  let arr' = dwindle# (# unboxByteArray arr, 0#, unboxInt receivedByteCount #)
-  return (boxBytes arr')
+hGetSome n h = fmap fromByteArray (BA.hGetSome n h)
 
 unboxInt :: Int -> Int#
 unboxInt (I# i) = i

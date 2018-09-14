@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# OPTIONS_GHC
@@ -28,27 +29,44 @@ module Packed.Bytes.Small
   , reverse
   , hash
   , hashWith
+    -- * Binary Encodings
+  , bigEndianWord16
+  , bigEndianWord32
+  , littleEndianWord32
     -- * Zip
   , zipAnd
   , zipOr
   , zipXor
     -- * Characters
   , isAscii
+    -- * IO
+  , hGet
+  , hGetSome
+  , readFile
     -- * Unsafe
   , unsafeIndex
   ) where
 
-import Prelude hiding (replicate,length,take,reverse)
+import Prelude hiding (replicate,length,take,reverse,readFile)
 
-import Control.Monad.Primitive (primitive_)
+import Control.Exception (IOException,catch)
+import Control.Monad.Primitive (PrimMonad,PrimState,primitive_)
 import Control.Monad.ST (runST,ST)
+import Data.Bits (FiniteBits,unsafeShiftR,finiteBitSize)
 import Data.Primitive.ByteArray (ByteArray(..),MutableByteArray(..))
-import GHC.Exts (setByteArray#,word2Int#,byteSwap#)
+import GHC.Exts (RealWorld,ByteArray#,setByteArray#,word2Int#,byteSwap#)
+import GHC.Exts (shrinkMutableByteArray#,isMutableByteArrayPinned#)
 import GHC.Int (Int(I#))
-import GHC.Word (Word8(W8#),Word(W#))
+import GHC.Ptr (Ptr(..))
+import GHC.Word (Word8(W8#),Word(W#),Word32,Word16)
+import GHC.IO.Handle (hFileSize)
+import System.IO (Handle)
+import qualified Foreign.Marshal.Alloc as FMA
 import qualified GHC.OldList as L
+import qualified Data.List.Unlifted as LU
 import qualified Packed.Bytes.Window as BAW
 import qualified Data.Primitive as PM
+import qualified System.IO as SIO
 
 singleton :: Word8 -> ByteArray
 singleton w = runST $ do
@@ -221,3 +239,145 @@ hashWith ::
   -> Int
 hashWith salt buckets arr =
   BAW.hashWith 0 (length arr) salt buckets arr
+
+withBytePtr ::
+     PM.MutableByteArray RealWorld
+  -> (PM.Addr -> IO b)
+  -> IO b
+withBytePtr marr@(PM.MutableByteArray marr#) f =
+  case isMutableByteArrayPinned# marr# of
+    1# -> do
+      let !addr = PM.mutableByteArrayContents marr
+      f addr
+    _ -> do
+      n <- PM.getSizeofMutableByteArray marr
+      FMA.allocaBytes n $ \ptr -> do
+        let !addr = ptrToAddr ptr
+        !r <- f addr
+        PM.copyAddrToByteArray marr 0 addr n
+        return r
+
+hGet :: Handle -> Int -> IO ByteArray
+hGet h n
+  | n > 0 = do
+      (arr,_) <- hGetUnsafe h n 
+      return arr
+  | otherwise = return empty
+
+-- Not exported. Precondition is that the requested size
+-- must be greater than zero. Returns the bytearray along
+-- with its size.
+hGetUnsafe :: Handle -> Int -> IO (ByteArray,Int)
+{-# INLINE hGetUnsafe #-}
+hGetUnsafe h n = do
+  !marr <- PM.newByteArray n
+  !receivedByteCount <- withBytePtr marr $ \addr -> SIO.hGetBuf h (addrToPtr addr) n
+  shrinkMutableByteArray marr receivedByteCount
+  arr <- PM.unsafeFreezeByteArray marr
+  return (arr,receivedByteCount)
+
+-- | Like 'hGet', except that a shorter 'ByteString' may be returned
+-- if there are not enough bytes immediately available to satisfy the
+-- whole request.  'hGetSome' only blocks if there is no data
+-- available, and EOF has not yet been reached.
+hGetSome :: Int -> Handle -> IO ByteArray
+hGetSome !n !h = do
+  !marr <- PM.newByteArray n
+  !receivedByteCount <- withBytePtr marr $ \addr -> SIO.hGetBufSome h (addrToPtr addr) n
+  shrinkMutableByteArray marr receivedByteCount
+  PM.unsafeFreezeByteArray marr
+
+readFile :: FilePath -> IO ByteArray
+readFile fp = SIO.withBinaryFile fp SIO.ReadMode $ \h -> do
+  fileSize <- catch (hFileSize h) useZeroIfNotRegularFile
+  let sz :: Int
+      sz = fromIntegral fileSize `max` 255
+  hGetContentsSizeHint h sz
+
+useZeroIfNotRegularFile :: IOException -> IO Integer
+useZeroIfNotRegularFile _ = return 0
+
+-- Not exported. Precondition is that the initial read
+-- size must be greater than zero.
+hGetContentsSizeHint ::
+     Handle -- handle
+  -> Int -- initial read size, must be greater than zero
+  -> IO ByteArray
+hGetContentsSizeHint hnd = go LU.Nil 0 where
+  go :: LU.List ByteArray# -> Int -> Int -> IO ByteArray
+  go !chunks !totalSz !sz = do
+    (ByteArray arr#,receivedByteCount) <- hGetUnsafe hnd sz
+    -- We rely on the hGetBuf behaviour (not hGetBufSome) where it reads up
+    -- to the size we ask for, or EOF. So short reads indicate EOF.
+    if receivedByteCount < sz
+      then reverseConcatByteArrayList (LU.Cons arr# chunks) (receivedByteCount + totalSz)
+      else go (LU.Cons arr# chunks) (receivedByteCount + totalSz) ((sz+sz) `min` 32752)
+           -- we grow the buffer sizes, but not too huge
+           -- we concatenate in the end anyway
+
+-- Not exported. Precondition is that the size argument must
+-- be the total size of all of the bytearrays summed. This
+-- does not really need to run in IO, but it is convenient to
+-- do so here.
+reverseConcatByteArrayList :: LU.List ByteArray# -> Int -> IO ByteArray
+reverseConcatByteArrayList arrs sz = do
+  !marr <- PM.newByteArray sz
+  let go !_ LU.Nil = return ()
+      go !pos (LU.Cons x xs) = do
+        let chunkSize = PM.sizeofByteArray (PM.ByteArray x)
+            posNext = pos - chunkSize
+        PM.copyByteArray marr posNext (PM.ByteArray x) 0 chunkSize
+        go posNext xs
+  go sz arrs
+  PM.unsafeFreezeByteArray marr
+
+shrinkMutableByteArray :: PrimMonad m
+  => MutableByteArray (PrimState m)
+  -> Int -- ^ new size
+  -> m ()
+{-# INLINE shrinkMutableByteArray #-}
+shrinkMutableByteArray (PM.MutableByteArray arr#) (I# n#)
+  = primitive_ (shrinkMutableByteArray# arr# n#)
+
+addrToPtr :: PM.Addr -> Ptr a
+addrToPtr (PM.Addr x) = Ptr x
+
+ptrToAddr :: Ptr a -> PM.Addr
+ptrToAddr (Ptr x) = PM.Addr x
+
+bigEndianWord16 :: Word16 -> ByteArray
+bigEndianWord16 w = createByteArray 2 $ \m -> do
+  PM.writeByteArray m 0 (selectOctet 0 w)
+  PM.writeByteArray m 1 (selectOctet 1 w)
+
+bigEndianWord32 :: Word32 -> ByteArray
+bigEndianWord32 w = createByteArray 4 $ \m -> do
+  PM.writeByteArray m 0 (selectOctet 0 w)
+  PM.writeByteArray m 1 (selectOctet 1 w)
+  PM.writeByteArray m 2 (selectOctet 2 w)
+  PM.writeByteArray m 3 (selectOctet 3 w)
+
+littleEndianWord32 :: Word32 -> ByteArray
+littleEndianWord32 w = createByteArray 4 $ \m -> do
+  PM.writeByteArray m 0 (selectOctet 3 w)
+  PM.writeByteArray m 1 (selectOctet 2 w)
+  PM.writeByteArray m 2 (selectOctet 1 w)
+  PM.writeByteArray m 3 (selectOctet 0 w)
+
+{-# INLINE selectOctet #-}
+selectOctet :: forall w. (FiniteBits w, Integral w) => Int -> w -> Word8
+selectOctet i w = fromIntegral (unsafeShiftR w ((finiteBitSize (undefined :: w) - 8) - i * 8))
+
+createByteArray
+  :: Int
+  -> (forall s. MutableByteArray s -> ST s ())
+  -> ByteArray
+createByteArray n f = runArray $ do
+  mary <- PM.newByteArray n
+  f mary
+  pure mary
+
+runArray :: (forall s. ST s (MutableByteArray s)) -> ByteArray
+runArray m = runST (m >>= PM.unsafeFreezeByteArray)
+
+

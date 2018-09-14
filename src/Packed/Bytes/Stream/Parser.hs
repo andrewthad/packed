@@ -829,7 +829,7 @@ byteFour e0 e1 e2 e3 (W8# a) (W8# b) (W8# c) (W8# d) = Parser (byteFourUnboxed e
 -- | Consume a byte matching the specified one. If the next byte
 -- in the input does not match the given byte, it is not consumed.
 -- This parser always succeeds even if there is no input. It returns
--- True if the byte was present (and consumed) and False is the byte
+-- True if the byte was present (and consumed) and False if the byte
 -- was not present.
 optionalByte :: Word8 -> Parser e Bool
 optionalByte theByte = Parser (optionalByteUnboxed theByte)
@@ -859,12 +859,6 @@ bytesUnboxed e (Bytes parr poff plen) = ParserLevity (go (unboxInt poff)) where
       (# | | (# #) #) -> case streamFunc s0 of
         (# s1, r #) -> go (ix +# len) r s1
 
--- replicateUntilMember :: forall e c a. ByteSet -> Parser e c a -> Parser (Array a)
--- replicateUntilMember separators b p = go []
---   where
---   go :: [a] -> Parser
---   go !xs = 
-  
 -- | Repeat the parser a specified number of times. The implementation
 --   is tail recursive and avoids building up a list as an intermediate
 --   data structure. Instead, it writes to an array directly. 
@@ -884,8 +878,11 @@ replicate (I# total) (Parser (ParserLevity f)) =
     _ -> case unsafeFreezeArray# xs s0 of
       (# s1, xsFrozen #) -> (# s1, (# m0, (# | Array xsFrozen #) #) #)
 
--- | This resets the context on every iteration.
-replicateIndex# :: forall e a. (Int# -> e) -> Int -> (e -> Parser e a) -> Parser e (Array a)
+replicateIndex# :: forall e a.
+     (Int# -> e) -- ^ Turn the index into an error message
+  -> Int -- ^ Number of times to run the parser
+  -> (e -> Parser e a) -- ^ Parser that is fed the error message
+  -> Parser e (Array a)
 replicateIndex# buildContext (I# total) f =
   Parser (ParserLevity (\m s0 -> case newArray# total (die "replicate") s0 of
     (# s1, xs0 #) -> go 0# xs0 m s1

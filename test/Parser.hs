@@ -29,15 +29,17 @@ module Parser
   , fixedParserE
   , fixedParserF
   , fixedParserG
+  , fixedParserH
+  , fixedParserI
   ) where
 
 import Control.Applicative
 import Control.Monad.ST (ST,runST)
 import Data.Primitive (Array)
-import Data.Word (Word8,Word32)
+import Data.Word (Word8,Word32,Word16)
 import GHC.Exts (fromList,unsafeCoerce#)
 import Hedgehog (Property,Gen,property,forAll,(===),failure)
-import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word,word32)
+import Hedgehog.Gen (list,enumBounded,int,frequency,choice,element,integral,word8,word,word32,word16)
 import Hedgehog.Range (Range,linear)
 import Packed.Bytes (Bytes)
 import Packed.Bytes.Stream.Parser (Parser)
@@ -50,8 +52,10 @@ import Test.Tasty.HUnit (assertEqual,Assertion)
 import qualified Data.List.Split as LS
 import qualified Data.Char
 import qualified Data.Map.Strict as M
+import qualified GHC.Exts as E
 import qualified GHC.OldList as L
 import qualified Packed.Bytes as B
+import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Parser as FP
 import qualified Packed.Bytes.Stream.Parser as P
 import qualified Packed.Bytes.Set as ByteSet
@@ -375,4 +379,57 @@ fixedParserG = do
   let sample = B.drop 19 (B.pack (replicate 19 255 ++ (map charToWord8 "07")))
       r = FP.run sample (FP.decimalWord32 ())
   assertEqual "equality" (FP.Result 2 (Left ())) r
+
+fixedParserH :: Property
+fixedParserH = property $ do
+  ws <- forAll (list (linear 0 30) (word32 (linear minBound maxBound)))
+  let len = L.length ws
+  let xs = mconcat (BA.singleton 42 : BA.bigEndianWord32 (fromIntegral len) : (map BA.bigEndianWord32 ws ++ [BA.pack [43,44]]))
+  let b = B.dropEnd 2 (B.drop 1 (B.fromByteArray xs))
+  let r = FP.run b $ do
+        sz <- FP.bigEndianWord32 ()
+        FP.replicate (fromIntegral sz) (FP.bigEndianWord32 ())
+  r === FP.Result (4 * (len + 1)) (Right (E.fromList ws))
+
+data ExampleI = ExampleI !Word16 !Word16 {-# UNPACK #-} !Bytes
+  deriving (Eq,Show)
+
+fixedParserI :: Property
+fixedParserI = property $ do
+  exs <- forAll $ list (linear 0 10) $ liftA3 ExampleI
+    (word16 (linear minBound maxBound))
+    (word16 (linear minBound maxBound))
+    genBytes
+  let xs = B.fromByteArray (BA.bigEndianWord32 (fromIntegral (L.length exs))) <> foldMap
+        (\(ExampleI x y b) -> mconcat
+          [ B.fromByteArray (BA.bigEndianWord16 x)
+          , B.fromByteArray (BA.bigEndianWord16 y)
+          , B.fromByteArray (BA.bigEndianWord32 (fromIntegral (B.length b)))
+          , b
+          ]
+        )
+        exs
+  let b = B.drop 1 (B.singleton 42 <> xs)
+  let r = FP.run b $ do
+        sz <- FP.bigEndianWord32 ()
+        FP.replicate (fromIntegral sz) $ ExampleI
+          <$> FP.bigEndianWord16 ()
+          <*> FP.bigEndianWord16 ()
+          <*> (FP.bigEndianWord32 () >>= FP.take () . fromIntegral)
+  r === FP.Result (B.length xs) (Right (E.fromList exs))
+
+genBytes :: Gen Bytes
+genBytes = do
+  byteList <- list (linear 0 64) genByte
+  front <- genOffset (L.length byteList)
+  back <- genOffset (L.length byteList)
+  return (B.dropEnd back (B.drop front (B.pack byteList)))
+
+genOffset :: Int -> Gen Int
+genOffset originalLen = integral (linear 0 maxDiscard)
+  where
+  maxDiscard = min 19 (div originalLen 3)
+
+genByte :: Gen Word8
+genByte = word8 (linear minBound maxBound)
 

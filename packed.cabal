@@ -30,6 +30,7 @@ library
     build-depends: base < 0
   exposed-modules:
     Data.ByteMap
+    Data.List.Unlifted
     Packed.Bytes
     Packed.Bytes.Window
     Packed.Bytes.Mutable
@@ -75,7 +76,7 @@ test-suite test
     , split
     , ghc-prim
     , primitive >= 0.6.4
-    , quickcheck-classes >= 0.4.12
+    , quickcheck-classes >= 0.4.14.2
     , tasty-quickcheck
     , QuickCheck == 2.11.3
   default-language: Haskell2010

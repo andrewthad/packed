@@ -123,6 +123,8 @@ tests = testGroup "Tests"
       , testProperty "E" Parser.fixedParserE
       , testProperty "F" Parser.fixedParserF
       , testCase "G" Parser.fixedParserG
+      , testProperty "H" Parser.fixedParserH
+      , testProperty "I" Parser.fixedParserI
       ]
     , testGroup "ByteMap" ByteMap.tests
     , testGroup "Trie"
