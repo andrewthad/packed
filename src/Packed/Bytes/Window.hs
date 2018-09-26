@@ -18,6 +18,7 @@
 
 module Packed.Bytes.Window
   ( findByte
+  , findByte'
   , findAnyByte2
   , foldl'
   , reverse
@@ -30,6 +31,7 @@ module Packed.Bytes.Window
   , findNonMemberByte
   , findNonDigit
   , stripPrefixResumable
+  , firstDifference
     -- * Folds
   , foldr
     -- * Hashing
@@ -329,6 +331,27 @@ safeIndexWord arr ix = if ix < 0 || ix >= (div (PM.sizeofByteArray arr) (PM.size
 -- this is only used internally
 unsafeIndex :: ByteArray -> Int -> Word8
 unsafeIndex = PM.indexByteArray
+
+-- | Check if the given slice of the two byte arrays
+--   is equal. Returns Nothing if they are equal. Otherwise,
+--   returns the first index at which they differ.
+firstDifference :: 
+     Int -- ^ start x
+  -> Int -- ^ start y
+  -> Int -- ^ length
+  -> ByteArray -- ^ array x
+  -> ByteArray -- ^ array y
+  -> Maybe Int
+firstDifference !ixA !ixB !len !arrA !arrB = go 0
+  -- TODO: Replace this with compareByteArrays# once GHC 8.4
+  -- is released. This will be simpler and much faster.
+  where
+  go :: Int -> Maybe Int
+  go !ix = if ix < len
+    then if unsafeIndex arrA (ix + ixA) == unsafeIndex arrB (ix + ixB)
+      then go (ix + 1)
+      else Just ix
+    else Nothing
 
 -- | Check if the given slice of the two byte arrays
 --   is equal.

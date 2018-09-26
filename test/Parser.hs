@@ -31,6 +31,7 @@ module Parser
   , fixedParserG
   , fixedParserH
   , fixedParserI
+  , fixedParserJ
   ) where
 
 import Control.Applicative
@@ -300,7 +301,7 @@ byteParserHttpRequest = property $ do
   let strChunks = LS.chunksOf elementsPerChunk Request.sample
       chunks = map (B.pack . map charToWord8) strChunks
       stream = foldMap Stream.fromBytes chunks
-      (r,mextra) = runExampleParser Request.parser stream
+      (r,mextra) = runExampleParser Request.streamParser stream
   Nothing === mextra
   Just Request.expected === r
 
@@ -345,7 +346,7 @@ fixedParserB :: Assertion
 fixedParserB = do
   let sample = B.drop 1 (B.pack (0 : enumFromTo 0 6))
       r = FP.run sample (pure (,,) <*> FP.bigEndianWord32 'A' <*> FP.bigEndianWord32 'B' <*> FP.bigEndianWord32 'C')
-  assertEqual "equality" (FP.Result 4 (Left 'B')) r
+  assertEqual "equality" (FP.Result 7 (Left 'B')) r
 
 fixedParserC :: Assertion
 fixedParserC = do
@@ -417,6 +418,15 @@ fixedParserI = property $ do
           <*> FP.bigEndianWord16 ()
           <*> (FP.bigEndianWord32 () >>= FP.take () . fromIntegral)
   r === FP.Result (B.length xs) (Right (E.fromList exs))
+
+fixedParserJ :: Property
+fixedParserJ = property $ do
+  ws <- forAll (list (linear 0 30) (word8 (linear minBound maxBound)))
+  let len = L.length ws
+  let xs = mconcat (B.pack ws : (s2b Request.sample : [B.pack [43,44]]))
+  let b = B.dropEnd 2 (B.drop len xs)
+  let r = FP.run b Request.bytesParser
+  r === FP.Result 551 (Right Request.expected)
 
 genBytes :: Gen Bytes
 genBytes = do

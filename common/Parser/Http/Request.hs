@@ -1,8 +1,12 @@
+{-# language BangPatterns #-}
+{-# language LambdaCase #-}
+
 {-# OPTIONS_GHC -O2 -Wall #-}
 
 module Parser.Http.Request
   ( Request
-  , parser
+  , bytesParser
+  , streamParser
   , sample
   , expected
   ) where
@@ -14,9 +18,11 @@ import Packed.Bytes.Stream.Parser (Parser)
 import Packed.Bytes.Set (ByteSet)
 import GHC.Exts (fromList)
 import qualified Data.Char
+import qualified GHC.Exts as E
 import qualified Packed.Bytes as B
 import qualified Packed.Bytes.Stream.Parser as Parser
 import qualified Packed.Bytes.Set as ByteSet
+import qualified Packed.Bytes.Parser as P
 
 data Request = Request
   { requestMethod :: {-# UNPACK #-} !Bytes
@@ -39,8 +45,22 @@ data Header = Header
 http11 :: HttpVersion
 http11 = HttpVersion 1 1
 
-parser :: Parser () Request
-parser = do
+bytesParser :: P.Parser () Request
+bytesParser = do
+  method <- P.takeBytesUntilByteConsume () (c2w ' ')
+  (path,c) <- P.takeBytesUntilMemberConsume () spaceQuestionSet
+  query <- case c of
+    63 -> P.takeBytesUntilByteConsume () (c2w ' ')
+    _ -> return B.empty
+  version <- bytesParserVersion
+  P.endOfLine ()
+  headers <- bytesParserHeaders
+  P.endOfLine ()
+  P.endOfInput ()
+  return (Request method path query version headers)
+
+streamParser :: Parser () Request
+streamParser = do
   method <- Parser.takeBytesUntilByteConsume () (c2w ' ')
   (path,c) <- Parser.takeBytesUntilMemberConsume () spaceQuestionSet
   query <- case c of
@@ -61,6 +81,27 @@ headerNameSet = ByteSet.fromList (map c2w (['_','-'] ++ ['a'..'z'] ++ ['A'..'Z']
 
 parserVersion :: Parser () HttpVersion
 parserVersion = http11 <$ Parser.bytes () (s2b "HTTP/1.1")
+
+bytesParserVersion :: P.Parser () HttpVersion
+bytesParserVersion = http11 <$ P.bytes () (s2b "HTTP/1.1")
+
+bytesParserHeaders :: P.Parser () (Array Header)
+bytesParserHeaders = do
+  let go :: [Header] -> Int -> P.Parser () (Array Header) 
+      go !xs !n = P.peek () >>= \case
+        10 -> return (E.fromListN n (reverse xs))
+        _ -> do
+          x <- bytesParserHeader
+          go (x : xs) (n + 1)
+  go [] 0
+
+bytesParserHeader :: P.Parser () Header
+bytesParserHeader = do
+  name <- P.takeBytesWhileMember headerNameSet
+  P.byte () (c2w ':')
+  P.skipSpace
+  value <- P.takeBytesUntilEndOfLineConsume ()
+  return (Header name value)
 
 parserHeaders :: Parser () (Array Header)
 parserHeaders = Parser.replicateIntersperseMember nonNewlineSet parserHeader

@@ -27,6 +27,7 @@ import qualified Packed.Bytes.Small as BA
 import qualified Packed.Bytes.Table as BT
 import qualified Packed.Bytes.Stream.ST as Stream
 import qualified Packed.Bytes.Stream.Parser as Parser
+import qualified Packed.Bytes.Parser as P
 import qualified Packed.Text as T
 
 -- from common directory
@@ -54,7 +55,8 @@ main = do
         ]
       , bgroup "Parser"
         [ bgroup "http-request"
-          [ bench "unchunked" $ whnf decodeHttpRequest httpReqUnchunked
+          [ bench "nonstreaming" $ whnf decodeHttpRequestBytes httpReqNonstreaming
+          , bench "unchunked" $ whnf decodeHttpRequest httpReqUnchunked
           , bench "chunk-100" $ whnf decodeHttpRequest httpReqChunk100
           , bench "chunk-10" $ whnf decodeHttpRequest httpReqChunk10
           , bench "chunk-4" $ whnf decodeHttpRequest httpReqChunk4
@@ -382,12 +384,22 @@ httpReqUnchunked = pure
   $ map c2w
   $ Request.sample
 
+httpReqNonstreaming :: Bytes
+httpReqNonstreaming = B.pack (map c2w Request.sample)
+
 decodeHttpRequest :: Array Bytes -> StrictMaybe Request.Request
 decodeHttpRequest arrBytes = runST $ do
-  Parser.Result _ r <- Parser.parseStreamST (Stream.fromArray arrBytes) Request.parser
+  Parser.Result _ r <- Parser.parseStreamST (Stream.fromArray arrBytes) Request.streamParser
   return $ case r of
     Left () -> StrictNothing
     Right a -> StrictJust a
+  
+decodeHttpRequestBytes :: Bytes -> StrictMaybe Request.Request
+decodeHttpRequestBytes bytes =
+  let P.Result _ r = P.run bytes Request.bytesParser
+   in case r of
+        Left () -> StrictNothing
+        Right a -> StrictJust a
   
 
 c2w :: Char -> Word8

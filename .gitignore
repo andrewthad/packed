@@ -41,3 +41,6 @@ minimal.hs
 .ghc*
 dump.txt
 example.hs
+*.dump-simpl
+cabal.project.local
+cabal.project.local~

@@ -969,7 +969,8 @@ replicateUntilEnd (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) w
 -- understood as all the bytes are considered separators. If the stream
 -- ends where a separator is expected, this is considered a successful parse.
 replicateIntersperseMember :: forall e a. ByteSet -> Parser e a -> Parser e (Array a)
--- THIS IS BROKEN. FIX IT.
+-- THIS IS BROKEN. FIX IT. The http parser in the test and benchmark
+-- suites relies on the broken behavior.
 replicateIntersperseMember !set (Parser (ParserLevity f)) = Parser (ParserLevity (go 0# [])) where
   go :: Int# -> [a] -> Maybe# (Leftovers# s) -> State# s -> (# State# s, Result# e s 'LiftedRep (Array a) #)
   go !n !xs !m !s0 = withNonEmpty m s0

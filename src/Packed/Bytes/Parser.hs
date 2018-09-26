@@ -27,16 +27,29 @@ module Packed.Bytes.Parser
   , mutate
   , consume
   , stash
+  , byte
+  , peek
+  , optionalByte
+  , bytes
+  , any
+  , endOfLine
+  , endOfInput
+  , skipSpace
+  , takeBytesWhileMember
+  , takeBytesUntilByteConsume
+  , takeBytesUntilMemberConsume
+  , takeBytesUntilEndOfLineConsume
   ) where
 
-import Prelude hiding (replicate,take)
+import Prelude hiding (replicate,take,any)
 
 import Packed.Bytes (Bytes(..))
+import Packed.Bytes.Set (ByteSet)
 import Control.Monad.ST (runST)
 import Data.Word (Word32)
 import Data.Primitive (ByteArray(..),Array,MutableArray)
 import GHC.ST (ST(..))
-import GHC.Word (Word32(W32#),Word16(W16#))
+import GHC.Word (Word32(W32#),Word16(W16#),Word8(W8#))
 import GHC.Int (Int(I#))
 import GHC.Types (TYPE,RuntimeRep(..),IO(..),Type)
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
@@ -47,8 +60,9 @@ import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
   clz8#, or#, neWord#, uncheckedShiftL#,int2Word#,word2Int#,quotInt#,
   shrinkMutableByteArray#,copyMutableByteArray#,chr#,gtWord#,
   writeWord32Array#,readFloatArray#,runRW#,ltWord#,minusWord#,quotRemInt#,
-  RealWorld,coerce,remInt#)
+  RealWorld,coerce,remInt#,isTrue#)
 import qualified Data.Primitive as PM
+import qualified Packed.Bytes.Window as BAW
 
 type Maybe# (a :: TYPE r) = (# (# #) | a #)
 type Either# a (b :: TYPE r) = (# a | b #)
@@ -69,12 +83,18 @@ run (Bytes (ByteArray arr) (I# off) (I# len)) (Parser (ParserLevity f)) = case f
 
 newtype Parser e a = Parser { getParser :: ParserLevity e 'LiftedRep a }
 
+-- A parser that always consumes the same amount of input. It may, however,
+-- fail even if the necessary amount of input is present.
+data PossibleParser e a = PossibleParser
+  Int#
+  ( Int# -> e )
+  ( ByteArray# -> Int# -> (# e | a #) )
+
 -- A parser that always consumes the same amount of input. Additionally,
 -- it will always succeed if that amount of input is present.
 data FixedParser e a = FixedParser
   Int# -- how many bytes do we need
   ( Int# -> e ) -- convert the actual number of bytes into an error
-  ( Int# -> Int# )
   -- convert the actual number of bytes into the number of
   -- bytes actually consumed (should be less than the argument given it)
   ( ByteArray# -> Int# -> a )
@@ -109,8 +129,16 @@ newtype StatefulParser e s a = StatefulParser
     -> (# State# s, Result# e 'LiftedRep a #)
   }
 
+fmapPossibleParser :: (a -> b) -> PossibleParser e a -> PossibleParser e b
+fmapPossibleParser f (PossibleParser n toError g) = PossibleParser n toError
+  (\arr off -> case g arr off of
+    (# e | #) -> (# e | #)
+    (# | a #) -> (# | f a #)
+  )
+
 fmapFixedParser :: (a -> b) -> FixedParser e a -> FixedParser e b
-fmapFixedParser f (FixedParser n toError toConsumed g) = FixedParser n toError toConsumed (\arr off -> f (g arr off))
+fmapFixedParser f (FixedParser n toError g) =
+  FixedParser n toError (\arr off -> f (g arr off))
 
 {-# INLINE fmapParser #-}
 fmapParser :: (a -> b) -> Parser e a -> Parser e b
@@ -163,11 +191,11 @@ instance Monad (StatefulParser s e) where
 
 {-# NOINLINE[1] fixedParserToParser #-}
 fixedParserToParser :: FixedParser e a -> Parser e a
-fixedParserToParser (FixedParser n toError toConsumed f) = Parser $ ParserLevity $ \arr off end ->
+fixedParserToParser (FixedParser n toError f) = Parser $ ParserLevity $ \arr off end ->
   let len = end -# off 
    in case len >=# n of
         1# -> (# off +# n, (# | f arr off #) #)
-        _ -> (# off +# toConsumed len, (# toError len | #) #)
+        _ -> (# end, (# toError len | #) #)
 
 {-# NOINLINE[1] fixedStatefulParserToStatefulParser #-}
 fixedStatefulParserToStatefulParser :: FixedStatefulParser e s a -> StatefulParser e s a
@@ -178,10 +206,104 @@ fixedStashParserToStatefulParser :: FixedStashParser e s -> StatefulParser e s (
 fixedStashParserToStatefulParser (FixedStashParser p f) =
   consume (fixedParserToParser p) >>= mutate . f
 
+bytes :: e -> Bytes -> Parser e ()
+bytes e (Bytes arrTarget offTarget lenTarget) =
+  Parser $ ParserLevity $ \arr off end -> if I# (end -# off) >= lenTarget
+    then case BAW.firstDifference offTarget (I# off) lenTarget arrTarget (ByteArray arr) of
+      Nothing -> (# off +# unInt lenTarget, (# | () #) #)
+      Just !diffIx -> (# off +# unInt diffIx, (# e | #) #)
+    else case BAW.firstDifference offTarget (I# off) (I# (end -# off)) arrTarget (ByteArray arr) of
+      Nothing -> (# end, (# e | #) #)
+      Just !diffIx -> (# off +# unInt diffIx, (# e | #) #)
+
+endOfLine :: e -> Parser e ()
+-- TODO: use a bounded size parser for this.
+endOfLine e = do
+  w <- any e
+  case w of
+    10 -> pure ()
+    13 -> byte e 10
+    _ -> failure e
+
+byte :: e -> Word8 -> Parser e ()
+-- TODO: use a bounded size parser for this.
+byte e (W8# w) = Parser $ ParserLevity $ \arr off end ->
+  case end ># off of
+    1# -> case eqWord# (indexWord8Array# arr off) w of
+      1# -> (# off +# 1#, (# | () #) #)
+      _ -> (# off, (# e | #) #)
+    _ -> (# end, (# e | #) #)
+
+peek :: e -> Parser e Word8
+peek e = Parser $ ParserLevity $ \arr off end ->
+  case end ># off of
+    1# -> (# off, (# | W8# (indexWord8Array# arr off) #) #)
+    _ -> (# end, (# e | #) #)
+
+optionalByte :: Word8 -> Parser e Bool
+-- TODO: use a bounded size parser for this.
+optionalByte (W8# w) = Parser $ ParserLevity $ \arr off end ->
+  case end ># off of
+    1# -> (# off +# 1#, (# | isTrue# (eqWord# (indexWord8Array# arr off) w) #) #)
+    _ -> (# end, (# | False #) #)
+
+endOfInput :: e -> Parser e ()
+-- TODO: It might be possible to use a bounded size parser
+-- for this. But it might not since it needs the end index.
+endOfInput e = Parser $ ParserLevity $ \_ off end ->
+  case end ==# off of
+    1# -> (# off, (# | () #) #)
+    _ -> (# off, (# e | #) #)
+
+
+failure :: e -> Parser e a
+failure e = Parser $ ParserLevity $ \_ off _ -> (# off, (# e | #) #)
+
+takeBytesUntilByteConsume :: e -> Word8 -> Parser e Bytes
+takeBytesUntilByteConsume e (W8# w) = Parser $ ParserLevity $ \arr off end -> case BAW.findByte' off (end -# off) w arr of
+  (# | ix #) -> (# ix +# 1#, (# | Bytes (ByteArray arr) (I# off) (I# (ix -# off)) #) #)
+  (# (# #) | #) -> (# end, (# e | #) #)
+
+takeBytesUntilMemberConsume :: e -> ByteSet -> Parser e (Bytes,Word8)
+takeBytesUntilMemberConsume e b = Parser $ ParserLevity $ \arr off end -> case BAW.findMemberByte (I# off) (I# (end -# off)) b (ByteArray arr) of
+  Just (I# ix, W8# w) -> (# ix +# 1#, (# | (Bytes (ByteArray arr) (I# off) (I# (ix -# off)), W8# w) #) #)
+  Nothing -> (# end, (# e | #) #)
+
+skipSpace :: Parser e ()
+skipSpace = Parser $ ParserLevity $ \arr off end -> case BAW.findNonAsciiSpace' (I# off) (I# (end -# off)) (ByteArray arr) of
+  (# | ix #) -> (# ix, (# | () #) #)
+  (# (# #) | #) -> (# end, (# | () #) #)
+
+takeBytesWhileMember :: ByteSet -> Parser e Bytes
+takeBytesWhileMember b = Parser $ ParserLevity $ \arr off end -> case BAW.findNonMemberByte (I# off) (I# (end -# off)) b (ByteArray arr) of
+  Just (I# ix, !_) -> (# ix, (# | (Bytes (ByteArray arr) (I# off) (I# (ix -# off))) #) #)
+  Nothing -> (# end, (# | Bytes (ByteArray arr) (I# off) (I# (end -# off)) #) #)
+
+takeBytesUntilEndOfLineConsume :: e -> Parser e Bytes
+takeBytesUntilEndOfLineConsume e = Parser $ ParserLevity $ \arr off end ->
+  case BAW.findAnyByte2 (I# off) (I# (end -# off)) 10 13 (ByteArray arr) of
+    Nothing -> (# end, (# e | #) #)
+    Just (I# ix, theByte) -> case theByte of
+      10 -> (# ix +# 1#, (# | Bytes (ByteArray arr) (I# off) (I# (ix -# off)) #) #)
+      _ -> case ix <# end of
+        1# -> case eqWord# (indexWord8Array# arr ix) 10## of
+          1# -> (# ix +# 2#, (# | (Bytes (ByteArray arr) (I# off) (I# (ix -# off))) #) #)
+          _ -> (# ix +# 2#, (# e | #) #)
+        _ -> (# end, (# e | #) #)
+
 take :: e -> Int -> Parser e Bytes
+-- consider rewriting this as a fixed parser
 take e (I# n# ) = Parser $ ParserLevity $ \arr off end -> case (end -# off) >=# n# of
   1# -> (# off +# n#, (# | Bytes (PM.ByteArray arr) (I# off) (I# n#) #) #)
   _ -> (# end, (# e | #) #)
+
+-- {-# INLINE byte #-}
+-- byte :: e -> Word8 -> Parser e Word32
+-- byte e = possibleParserToParser . possibleByte e
+-- 
+-- {-# INLINE fixedByte #-}
+-- possibleByte :: e -> PossibleParser e Word32
+-- possibleByte e = PossibleParser 1# (\_ -> e) (\arr off -> W32# (unsafeBigEndianWord32Unboxed arr off))
 
 {-# INLINE bigEndianWord32 #-}
 bigEndianWord32 :: e -> Parser e Word32
@@ -189,7 +311,7 @@ bigEndianWord32 = fixedParserToParser . fixedBigEndianWord32
 
 {-# INLINE fixedBigEndianWord32 #-}
 fixedBigEndianWord32 :: e -> FixedParser e Word32
-fixedBigEndianWord32 e = FixedParser 4# (\_ -> e) (\_ -> 0#) (\arr off -> W32# (unsafeBigEndianWord32Unboxed arr off))
+fixedBigEndianWord32 e = FixedParser 4# (\_ -> e) (\arr off -> W32# (unsafeBigEndianWord32Unboxed arr off))
 
 unsafeBigEndianWord32Unboxed :: ByteArray# -> Int# -> Word#
 unsafeBigEndianWord32Unboxed arr off =
@@ -203,13 +325,21 @@ unsafeBigEndianWord32Unboxed arr off =
            `or#` byteD
    in theWord
 
+{-# INLINE any #-}
+any :: e -> Parser e Word8
+any = fixedParserToParser . fixedAny
+
+{-# INLINE fixedAny #-}
+fixedAny :: e -> FixedParser e Word8
+fixedAny e = FixedParser 1# (\_ -> e) (\arr off -> W8# (indexWord8Array# arr off))
+
 {-# INLINE bigEndianWord16 #-}
 bigEndianWord16 :: e -> Parser e Word16
 bigEndianWord16 = fixedParserToParser . fixedBigEndianWord16
 
 {-# INLINE fixedBigEndianWord16 #-}
 fixedBigEndianWord16 :: e -> FixedParser e Word16
-fixedBigEndianWord16 e = FixedParser 2# (\_ -> e) (\_ -> 0#) (\arr off -> W16# (unsafeBigEndianWord16Unboxed arr off))
+fixedBigEndianWord16 e = FixedParser 2# (\_ -> e) (\arr off -> W16# (unsafeBigEndianWord16Unboxed arr off))
 
 unsafeBigEndianWord16Unboxed :: ByteArray# -> Int# -> Word#
 unsafeBigEndianWord16Unboxed arr off =
@@ -272,29 +402,21 @@ unsafeDecimalDigitUnboxedMaybe arr off =
 
 {-# INLINE applyFixedParser #-}
 applyFixedParser :: FixedParser e (a -> b) -> FixedParser e a -> FixedParser e b
-applyFixedParser (FixedParser n1 toError1 toConsumed1 p1) (FixedParser n2 toError2 toConsumed2 p2) =
+applyFixedParser (FixedParser n1 toError1 p1) (FixedParser n2 toError2 p2) =
   FixedParser (n1 +# n2)
     (\i -> case i <# n1 of
       1# -> toError1 i
       _ -> toError2 (n1 -# i)
-    )
-    (\i -> case i <# n1 of
-      1# -> toConsumed1 i
-      _ -> n1 +# toConsumed2 (i -# n1)
     )
     (\arr off0 -> p1 arr off0 (p2 arr (off0 +# n1)))
 
 {-# INLINE tupleFixedParsers #-}
 tupleFixedParsers :: FixedParser e a -> FixedParser e b -> FixedParser e (a,b)
-tupleFixedParsers (FixedParser n1 toError1 toConsumed1 p1) (FixedParser n2 toError2 toConsumed2 p2) =
+tupleFixedParsers (FixedParser n1 toError1 p1) (FixedParser n2 toError2 p2) =
   FixedParser (n1 +# n2)
     (\i -> case i <# n1 of
       1# -> toError1 i
       _ -> toError2 (n1 -# i)
-    )
-    (\i -> case i <# n1 of
-      1# -> toConsumed1 i
-      _ -> n1 +# toConsumed2 (i -# n1)
     )
     (\arr off0 -> (p1 arr off0, p2 arr (off0 +# n1)))
   
@@ -491,14 +613,14 @@ replicateFixedStashIndex :: forall e c s a.
   -> FixedParser c a -- ^ Parser
   -> (Int -> a -> ST s ()) -- ^ Save the result of a successful parse
   -> FixedStatefulParser e s ()
-replicateFixedStashIndex castErr (I# n) (FixedParser sz toErr toConsumed f) save =
+replicateFixedStashIndex castErr (I# n) (FixedParser sz toErr f) save =
   FixedStatefulParser (n *# sz)
     ( \len arr off s ->
       let !(# m, remaining #) = quotRemInt# len sz
           go !ix !off0 s0 = case ix <# m of
             1# -> case unST (save (I# ix) (f arr off0)) s0 of
               (# s1, _ #) -> go (ix +# 1#) (off0 +# sz) s1
-            _ -> (# s0, (# castErr (I# ix) (toErr remaining), (len +# toConsumed remaining) -# sz #) #)
+            _ -> (# s0, (# castErr (I# ix) (toErr remaining), (len +# remaining) -# sz #) #)
        in go 0# off s
     )
     ( \arr off s ->
@@ -522,10 +644,9 @@ replicate n p = go 0 [] where
     else return (reverseArrayFromListN n xs)
 
 replicateFixed :: Int -> FixedParser e a -> FixedParser e (Array a)
-replicateFixed (I# n) (FixedParser sz toErr toConsumed f) =
+replicateFixed (I# n) (FixedParser sz toErr f) =
   FixedParser (n *# sz)
     (\len -> toErr (remInt# len sz))
-    (\len -> (len +# toConsumed (remInt# len sz)) -# sz)
     (\arr off ->
       let go !ix !off0 !xs = case ix <# n of
             1# -> go (ix +# 1#) (off0 +# sz) (f arr off0 : xs)
@@ -559,3 +680,6 @@ createArray n x f = runST $ do
   ma <- PM.newArray n x
   f ma
   PM.unsafeFreezeArray ma
+
+unInt :: Int -> Int#
+unInt (I# i) = i
