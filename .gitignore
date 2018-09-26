@@ -42,5 +42,7 @@ minimal.hs
 dump.txt
 example.hs
 *.dump-simpl
+*.dump-cmm
+*.dump-asm
 cabal.project.local
 cabal.project.local~
