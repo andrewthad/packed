@@ -18,6 +18,8 @@ let
 
 in
 
+with nixpkgs.haskell.lib;
+
 self: super:
 {
   patches = super.callPackage patchScript { patches = patchDir; };
@@ -36,7 +38,7 @@ self: super:
           primitive-maybe = sel.callPackage ./deps/primitive-maybe.nix {};
 
           # source should be cleaned here
-          packed = sel.callCabal2nix "packed" ../. {};
+          packed = doCheck (doBenchmark (sel.callCabal2nix "packed" ../. {}));
         
         };
     in super.haskell.packages.ghcHEAD.extend (self.lib.composeExtensions localOverrides ghcPackageOverrides);
