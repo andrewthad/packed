@@ -1,0 +1,1 @@
+nix build -I nixpkgs=https://github.com/chessai/head.hackage/archive/master.tar.gz '(with import <nixpkgs> {}; haskellPackages.callCabal2nix "packed" ./. {})'
