@@ -4,8 +4,8 @@ with rec {
   fetchNixpkgs = import ./fetchNixpkgs.nix;
 
   _nixpkgs = fetchNixpkgs {
-    rev = "da0c385a691d38b56b17eb18b852c4cec2050c24";
-    sha256 = "0svhqn139cy2nlgv4kqv1bsxza2dcm0yylrhnmanw4p73gv85caf"; 
+    rev = "d767ba99964eb776c2b482ca8a3a0ef42d7ccf8b";
+    sha256 = "0k7nh9m0wkiyszal4fywj57j4zx2yzhzgq1182qn937jg9fa30gl"; 
   };
 
 };

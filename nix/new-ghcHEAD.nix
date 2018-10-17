@@ -1,11 +1,16 @@
 let
-  nixpkgs = import <nixpkgs> {};
-  
+  fetchNixpkgs = import ./fetchNixpkgs.nix;
+
+  nixpkgs = import (fetchNixpkgs {
+    rev = "d767ba99964eb776c2b482ca8a3a0ef42d7ccf8b";
+    sha256 = "0k7nh9m0wkiyszal4fywj57j4zx2yzhzgq1182qn937jg9fa30gl";
+  }) { config = {}; overlays = []; };
+
   patchRepo = nixpkgs.fetchFromGitHub {
     owner = "chessai";
     repo  = "head.hackage";
-    rev   = "c157b8c3e661fc5573316006cc109a3b84481803";
-    sha256 = "0ijfnjgpl5zc939lrpfqqprayd0mwz8snsba608vkmwhfjwyp07p";
+    rev   = "6b054a4b2cb17fea14a459959ead75d41103f219";
+    sha256 = "1z0sfm1rk6xwb8bni8gl2wv2g48j4bj1bb76yhc1hcgp8sz67gda";
   };
 
   patchDir = "${patchRepo}/patches";
@@ -27,16 +32,11 @@ self: super:
               doCheck   = false;
             });
 
-          primitive = super.primitive_0_6_4_0;
+          primitive = sel.callPackage ./deps/primitive.nix {};
+          primitive-maybe = sel.callPackage ./deps/primitive-maybe.nix {};
 
-          packed = (
-            with rec {
-              packedSource = sel.lib.cleanSource ../.;
-              packedBasic = sel.callCabal2nix "packed" packedSource {};
-            };
-            overrideCabal packedBasic (old: {
-            })
-          );
+          # source should be cleaned here
+          packed = sel.callCabal2nix "packed" ../. {};
         
         };
     in super.haskell.packages.ghcHEAD.extend (self.lib.composeExtensions localOverrides ghcPackageOverrides);

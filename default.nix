@@ -1,8 +1,12 @@
 { }:
 
-with rec {
+let
   pkgs = (import ./nix/nixpkgs.nix {});
   drv = pkgs.haskell.packages.new-ghcHEAD.packed;
-};
 
-drv
+in rec {
+  inherit drv;
+  inherit pkgs;
+
+  packed = drv;
+}
