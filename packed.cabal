@@ -33,7 +33,6 @@ library
     Data.List.Unlifted
     Packed.Bytes
     Packed.Bytes.Window
-    Packed.Bytes.Mutable
     Packed.Bytes.Small
     Packed.Bytes.Parser
     Packed.Bytes.Table
@@ -43,7 +42,6 @@ library
     Packed.Bytes.Set
     Packed.Bytes.Trie
     Packed.Bytes.Builder
-    Packed.Bytes.Builder.IO
     Packed.Text
     Packed.Text.Small
     Packed.Text.Window
