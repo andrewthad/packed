@@ -17,13 +17,17 @@ self: super:
 {
   patches = super.callPackage patchScript { patches = patchDir; };
 
-  new-ghcHEAD =
-    let ghcPackageOverrides = super.callPackage self.patches {};
+  haskell = super.haskell // {
+    packages = super.haskell.packages // {
+      new-ghcHEAD = let ghcPackageOverrides = super.callPackage self.patches {};
         localOverrides = sel: sup: {
           mkDerivation = drv: sup.mkDerivation (drv //
             { jailbreak = true;
               doHaddock = false;
+              doCheck   = false;
             });
+
+          primitive = super.primitive_0_6_4_0;
 
           packed = (
             with rec {
@@ -36,4 +40,8 @@ self: super:
         
         };
     in super.haskell.packages.ghcHEAD.extend (self.lib.composeExtensions localOverrides ghcPackageOverrides);
+    };
+
+  }; 
+  
 }
