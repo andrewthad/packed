@@ -34,11 +34,14 @@ self: super:
               doCheck   = false;
             });
 
+          base-compat = sel.callPackage ./deps/base-compat.nix {};
           primitive = sel.callPackage ./deps/primitive.nix {};
           primitive-maybe = sel.callPackage ./deps/primitive-maybe.nix {};
 
           # source should be cleaned here
-          packed = doCheck (doBenchmark (sel.callCabal2nix "packed" ../. {}));
+          # tests should be enabled here, but there is a patch issue
+          # that needs to be resolved.
+          packed = doBenchmark (sel.callCabal2nix "packed" ../. {});
         
         };
     in super.haskell.packages.ghcHEAD.extend (self.lib.composeExtensions localOverrides ghcPackageOverrides);
