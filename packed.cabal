@@ -25,7 +25,7 @@ library
       base >= 4.11 && < 5.0
     , ghc-prim >= 0.5.0 && < 0.6
     , primitive >= 0.6.4 && < 0.7
-    , primitive-maybe >= 0.1 && < 0.2
+    , primitive-maybe >= 0.1.1 && < 0.2
   if impl(ghc < 8.4.3)
     build-depends: base < 0
   exposed-modules:

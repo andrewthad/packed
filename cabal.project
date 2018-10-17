@@ -1,3 +1,3 @@
-packages: . ../primitive-maybe ../primitive-checked
+packages: .
 with-compiler: /opt/ghc/8.6.1/bin/ghc
 allow-newer: base, template-haskell, stm
