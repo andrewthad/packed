@@ -11,14 +11,23 @@ its own `bytestring`, `text`, `aeson`, and parsers (not necessarily in the spiri
 of `attoparsec`, also there are a number of parsers in this library).
 For `packed`, we want to avoid using the C FFI, instead wishing to implement things
 in pure GHC Haskell. Most things in `packed` are implemented using `-XUnboxedSums`
-and `-XUnboxedTuples`. The aforementioned libraries were created when `stream fusion`
-was still a new hype-word. Our implementations of `ByteString` and `Text` don't provide
-slicing information in the datatype - since this is usually just a source of extra
-allocation, as (in our experience) slicing is not needed so often in a practical setting.
+and `-XUnboxedTuples`. The aforementioned libraries were created before
+of `UnboxedSums` and before `resizeMutableByteArray#`. These push the design
+decisions of `packed` in a different direction. Additionally, we do not
+support any stream fusion. It is unclear whether users of `text` and `bytestring`
+benefit from stream fusion in practice, and it would complicate the implementation.
+We provide both sliced and unsliced variants of `ByteString` and `Text`:
+
+- Sliced bytes: `Bytes`
+- Unsliced bytes: `ByteArray`
+- Sliced text: `Text`
+- Unsliced text: `SmallText`
+
+In certain situations, the metadata needed for slicing is an unnecessary
+source of allocations. Users of `packed` are expected to know what they need.
 
 In short, `packed` is a different design of the APIs of these libraries, and
-the benchmarks show promising results. Most operations in the benchmarks currently
-show a 2x to 10x speedup over the current de-facto libraries.
+some preliminary benchmarks on the parser show promising results.
 
 ## Building and Stability
 Do not attempt to build this library with versions of GHC earlier than 8.6.
