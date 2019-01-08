@@ -1,12 +1,9 @@
-{ }:
+{ compiler ? "ghc863"
+, nixpkgs ? (import ./nix/nixpkgs.nix { inherit compiler; })
+}:
 
-let
-  pkgs = (import ./nix/nixpkgs.nix {});
-  drv = pkgs.haskell.packages.new-ghcHEAD.packed;
+with rec {
+  drv = nixpkgs.haskellPackages.packed;
+};
 
-in rec {
-  inherit drv;
-  inherit pkgs;
-
-  packed = drv;
-}
+drv

@@ -1,16 +1,22 @@
-{ }:
+{ compiler ? "ghc863" }:
 
 with rec {
   fetchNixpkgs = import ./fetchNixpkgs.nix;
-
-  _nixpkgs = fetchNixpkgs {
-    rev = "d767ba99964eb776c2b482ca8a3a0ef42d7ccf8b";
-    sha256 = "0k7nh9m0wkiyszal4fywj57j4zx2yzhzgq1182qn937jg9fa30gl"; 
+  nixpkgs = fetchNixpkgs {
+    owner  = "NixOS";
+    repo   = "nixpkgs";
+    rev    = "cecec1f74468766825c2ad32d8388c2ded36225f";
+    sha256 = "1sq538wy0shbakah27b6n4bl5amzwkzjsds77vdd8rsq0d1nys4w";
   };
-
 };
 
-import _nixpkgs {
-  config = { };
-  overlays = [ (import ./new-ghcHEAD.nix) ];
+import nixpkgs {
+  config = {
+    packageOverrides = super: let self = super.pkgs; in {
+      haskellPackages = super.haskell.packages.${compiler}.override {
+        overrides = import ./overrides.nix { pkgs = self; };
+      };
+    };
+  };
+  overlays = [ ];
 }

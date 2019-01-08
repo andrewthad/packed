@@ -1,1 +1,1 @@
-(import ./default.nix {}).packed.env
+(import ./default.nix {}).env
