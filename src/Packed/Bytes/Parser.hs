@@ -18,8 +18,10 @@ module Packed.Bytes.Parser
   , StatefulParser(..)
   , Result(..)
   , run
+  , bigEndianWord8
   , bigEndianWord16
   , bigEndianWord32
+  , bigEndianWord64
   , decimalWord32
   , replicateStashIndex
   , replicate
@@ -46,10 +48,9 @@ import Prelude hiding (replicate,take,any)
 import Packed.Bytes (Bytes(..))
 import Packed.Bytes.Set (ByteSet)
 import Control.Monad.ST (runST)
-import Data.Word (Word32)
 import Data.Primitive (ByteArray(..),Array,MutableArray)
 import GHC.ST (ST(..))
-import GHC.Word (Word32(W32#),Word16(W16#),Word8(W8#))
+import GHC.Word (Word64(W64#),Word32(W32#),Word16(W16#),Word8(W8#))
 import GHC.Int (Int(I#))
 import GHC.Types (TYPE,RuntimeRep(..),IO(..),Type)
 import GHC.Exts (State#,Int#,ByteArray#,Word#,(+#),(-#),(>#),
@@ -305,6 +306,27 @@ take e (I# n# ) = Parser $ ParserLevity $ \arr off end -> case (end -# off) >=# 
 -- possibleByte :: e -> PossibleParser e Word32
 -- possibleByte e = PossibleParser 1# (\_ -> e) (\arr off -> W32# (unsafeBigEndianWord32Unboxed arr off))
 
+{-# INLINE bigEndianWord64 #-}
+bigEndianWord64 :: e -> Parser e Word64
+bigEndianWord64 = fixedParserToParser . fixedBigEndianWord64
+
+fixedBigEndianWord64 :: e -> FixedParser e Word64
+fixedBigEndianWord64 e = FixedParser 8# (\_ -> e) (\arr off -> W64# (unsafeBigEndianWord64Unboxed arr off))
+
+unsafeBigEndianWord64Unboxed :: ByteArray# -> Int# -> Word#
+unsafeBigEndianWord64Unboxed arr off =
+  let !byteA = indexWord8Array# arr off
+      !byteB = indexWord8Array# arr (off +# 1#)
+      !byteC = indexWord8Array# arr (off +# 2#)
+      !byteD = indexWord8Array# arr (off +# 3#)
+      !byteE = indexWord8Array# arr (off +# 4#) 
+      !theWord = uncheckedShiftL# byteA 32#
+           `or#` uncheckedShiftL# byteB 24#
+           `or#` uncheckedShiftL# byteC 16#
+           `or#` uncheckedShiftL# byteD 8#
+           `or#` byteE
+   in theWord
+
 {-# INLINE bigEndianWord32 #-}
 bigEndianWord32 :: e -> Parser e Word32
 bigEndianWord32 = fixedParserToParser . fixedBigEndianWord32
@@ -341,6 +363,13 @@ bigEndianWord16 = fixedParserToParser . fixedBigEndianWord16
 fixedBigEndianWord16 :: e -> FixedParser e Word16
 fixedBigEndianWord16 e = FixedParser 2# (\_ -> e) (\arr off -> W16# (unsafeBigEndianWord16Unboxed arr off))
 
+bigEndianWord8 :: e -> Parser e Word8
+bigEndianWord8 = fixedParserToParser . fixedBigEndianWord8
+
+{-# INLINE fixedBigEndianWord8 #-}
+fixedBigEndianWord8 :: e -> FixedParser e Word8
+fixedBigEndianWord8 e = FixedParser 1# (\_ -> e) (\arr off -> W8# (unsafeBigEndianWord8Unboxed arr off))
+
 unsafeBigEndianWord16Unboxed :: ByteArray# -> Int# -> Word#
 unsafeBigEndianWord16Unboxed arr off =
   let !byteA = indexWord8Array# arr off
@@ -348,6 +377,11 @@ unsafeBigEndianWord16Unboxed arr off =
       !theWord = uncheckedShiftL# byteA 8#
            `or#` byteB
    in theWord
+
+unsafeBigEndianWord8Unboxed :: ByteArray# -> Int# -> Word#
+unsafeBigEndianWord8Unboxed arr off =
+  let !theWord = indexWord8Array# arr off
+  in theWord
 
 -- | This parser does not allow leading zeroes. Consequently,
 -- we can establish an upper bound on the number of bytes this
